@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="聚合国内外 AI 热点、项目、模型和论文的每日雷达。">
+  <title>AI Radar</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-block">
+      <a class="brand" href="/" aria-label="AI Radar 首页"><span class="brand-mark">R</span>AI Radar</a>
+      <span class="status-line"><span class="status-dot" id="live-dot"></span><span id="updated-label">正在连接</span></span>
+    </div>
+    <button class="refresh-button" id="refresh-button" type="button"><span aria-hidden="true">↻</span><span>刷新</span></button>
+  </header>
+
+  <main>
+    <section class="overview" aria-label="今日概况">
+      <div>
+        <p class="eyebrow" id="date-label"></p>
+        <h1>今天有什么新东西？</h1>
+      </div>
+      <div class="metrics" aria-live="polite">
+        <div><strong id="today-count">-</strong><span>近 24 小时</span></div>
+        <div><strong id="source-count">-</strong><span>信息源</span></div>
+        <div><strong id="healthy-count">-</strong><span>正常采集</span></div>
+      </div>
+    </section>
+
+    <section class="filter-band" aria-label="榜单筛选">
+      <div class="segmented" id="range-filter" aria-label="时间范围">
+        <button type="button" data-value="24h" aria-pressed="true">24 小时</button>
+        <button type="button" data-value="3d" aria-pressed="false">3 天</button>
+        <button type="button" data-value="7d" aria-pressed="false">7 天</button>
+      </div>
+      <div class="filter-row">
+        <label class="search-box">
+          <span class="visually-hidden">搜索榜单</span>
+          <span aria-hidden="true">⌕</span>
+          <input id="search-input" type="search" placeholder="搜索项目、模型或关键词" autocomplete="off">
+        </label>
+        <select id="region-filter" aria-label="地区">
+          <option value="all">国内 + 海外</option>
+          <option value="china">国内</option>
+          <option value="global">海外</option>
+        </select>
+      </div>
+      <nav class="type-tabs" id="type-filter" aria-label="内容类型">
+        <button type="button" data-value="all" aria-pressed="true">全部</button>
+        <button type="button" data-value="project" aria-pressed="false">项目</button>
+        <button type="button" data-value="model" aria-pressed="false">模型</button>
+        <button type="button" data-value="paper" aria-pressed="false">论文</button>
+        <button type="button" data-value="news" aria-pressed="false">资讯</button>
+        <button type="button" data-value="discussion" aria-pressed="false">讨论</button>
+      </nav>
+    </section>
+
+    <div class="content-grid">
+      <section class="ranking" aria-labelledby="ranking-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">DISCOVERY FEED</p>
+            <h2 id="ranking-title">综合热榜</h2>
+          </div>
+          <span id="result-count">加载中</span>
+        </div>
+        <ol class="item-list" id="item-list" aria-live="polite" aria-busy="true"></ol>
+        <div class="empty-state" id="empty-state" hidden>
+          <strong id="empty-title">还没有抓到内容</strong>
+          <p id="empty-copy">采集器正在从各个信息源获取最新内容。</p>
+        </div>
+      </section>
+
+      <aside class="sources" aria-labelledby="sources-title">
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">SOURCE HEALTH</p>
+            <h2 id="sources-title">信息源</h2>
+          </div>
+          <button class="source-toggle" id="source-toggle" type="button" aria-expanded="false" aria-controls="source-list">展开</button>
+        </div>
+        <div class="source-summary" id="source-summary"></div>
+        <ul class="source-list" id="source-list"></ul>
+      </aside>
+    </div>
+  </main>
+
+  <footer>
+    <span>AI Radar</span>
+    <span>热度由新鲜度、讨论量和跨源出现次数综合计算</span>
+  </footer>
+  <script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ai-radar.tunnel</string>
+
+    <!-- Replace the two placeholder values before installing this file. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/ssh</string>
+        <string>-N</string>
+        <string>-L</string>
+        <string>127.0.0.1:8765:127.0.0.1:8765</string>
+        <string>-i</string>
+        <string>__SSH_KEY_PATH__</string>
+        <string>-o</string>
+        <string>BatchMode=yes</string>
+        <string>-o</string>
+        <string>ExitOnForwardFailure=yes</string>
+        <string>-o</string>
+        <string>ServerAliveInterval=30</string>
+        <string>-o</string>
+        <string>ServerAliveCountMax=3</string>
+        <string>-o</string>
+        <string>ConnectTimeout=10</string>
+        <string>-o</string>
+        <string>StrictHostKeyChecking=accept-new</string>
+        <string>__SSH_USER_AND_HOST__</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/ai-radar-tunnel.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/ai-radar-tunnel.err.log</string>
+</dict>
+</plist>

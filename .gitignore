@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Local configuration and secrets
+.env.local
+.env.*.local
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Runtime data
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
+
+# macOS and generated desktop artifacts
+.DS_Store
+desktop/build/
+
+# Local logs and editor files
+*.log
+.idea/
+.vscode/

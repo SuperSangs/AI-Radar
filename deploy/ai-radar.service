@@ -1,0 +1,26 @@
+[Unit]
+Description=AI Radar aggregation service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/ai-radar
+EnvironmentFile=-/home/ubuntu/.config/ai-radar/env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/ai-radar/app.py serve --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/ai-radar/data
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

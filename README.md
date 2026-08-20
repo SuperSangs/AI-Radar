@@ -1,0 +1,179 @@
+# AI Radar
+
+AI Radar 是一个面向“今天 AI 圈又出现了什么”的资讯聚合工具。它定时采集国内外公开信息源，将项目、模型、论文、资讯、讨论和 X 热帖统一清洗、去重、排序，然后通过浏览器看板或 macOS 悬浮球展示。
+
+详细的模块边界、数据流、刷新生命周期和 API 说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+## 功能概览
+
+- 24 个国内外信息源并发采集，单个来源失败不会阻塞全局。
+- SQLite 本地存储，按标题指纹跨来源去重，自动清理 30 天前数据。
+- 按新鲜度、互动量、跨源确认和来源质量计算综合分。
+- X 热帖采用“重点账号优先 + 全网关键词补充”策略，默认每天最多一次、最多 30 条资源。
+- Web 看板支持时间范围、地区、内容类型和关键词筛选。
+- macOS 原生悬浮球支持拖动、右键退出、分类筛选、打开原文和英文翻译。
+- 翻译只在用户点击时调用阿里云百炼 DashScope，不影响采集成本。
+
+## 目录
+
+```text
+ai-radar/
+├── app.py                         # HTTP 服务、API、刷新调度
+├── radar/
+│   ├── sources.py                 # 来源与 X 账号配置
+│   ├── collector.py               # 各来源采集器与统一标准化
+│   ├── store.py                   # SQLite 存储、去重、排序、状态
+│   └── translator.py              # DashScope 翻译适配器
+├── web/                           # 零构建依赖的浏览器看板
+├── desktop/                       # macOS AppKit + WebKit 悬浮球
+├── deploy/                        # systemd 与 macOS 隧道模板
+├── tests/                         # Python 单元测试
+├── data/                          # 运行时数据库（不提交）
+├── .env.example                   # 环境变量模板
+└── docs/ARCHITECTURE.md           # 详细架构文档
+```
+
+## 快速开始
+
+需要 Python 3.11 或更高版本。服务端只使用 Python 标准库，不需要安装第三方包。
+
+```bash
+cd ai-radar
+cp .env.example .env.local
+python3 app.py
+```
+
+访问 <http://127.0.0.1:8765>。首次启动会在后台采集，通常需要 10-30 秒。
+
+常用命令：
+
+```bash
+python3 app.py serve                         # 启动服务
+python3 app.py refresh                       # 手动执行一次采集并打印结果
+AI_RADAR_PORT=9000 python3 app.py            # 修改监听端口
+AI_RADAR_REFRESH_MINUTES=60 python3 app.py  # 修改普通来源刷新周期
+```
+
+桌面端需要 macOS 13+ 和 Xcode Command Line Tools：
+
+```bash
+cd desktop
+./build.sh
+open build/AIRadarDesktop.app
+```
+
+桌面 App 默认访问 `http://127.0.0.1:8765`。如果服务部署在远程服务器，请先建立 SSH 隧道，或修改 `desktop/AIRadarDesktop.m` 中的 API 地址后重新构建。
+
+## 信息源
+
+当前内置 24 个来源：
+
+| 类型 | 来源 |
+| --- | --- |
+| 项目/模型 | GitHub LLM 新项目、Hugging Face 模型、Hugging Face Spaces |
+| 论文 | Hugging Face Daily Papers、arXiv AI/ML/CL |
+| 社区讨论 | Hacker News、DEV Community AI、Reddit MachineLearning、Reddit LocalLLaMA |
+| 海外媒体/机构 | TechCrunch AI、VentureBeat AI、The Decoder、OpenAI News、Google DeepMind、NVIDIA Deep Learning、Simon Willison、Import AI |
+| 国内媒体/社区 | 量子位、机器之心、Solidot、HelloGitHub、少数派、阮一峰网络日志 |
+| 社交平台 | X AI 热帖 |
+
+来源定义集中在 `radar/sources.py`。RSS、JSON、GitHub、Hugging Face、Hacker News、arXiv、DEV、Reddit 和 X 分别使用独立适配逻辑。
+
+## X API 配置与成本控制
+
+将 X Bearer Token 放在本地 `.env.local` 或服务器环境变量中：
+
+```dotenv
+X_BEARER_TOKEN=your-token
+X_MAX_RESULTS=30
+X_MAX_CALLS_PER_DAY=1
+X_MIN_INTERVAL_MINUTES=1440
+# 直连 api.x.com 不通时再填写：
+# X_HTTPS_PROXY=http://127.0.0.1:7890
+```
+
+一次默认采集最多读取 30 个 tweet resources：前两页优先查询 30 个重点账号，最后一页用严格 AI 关键词补充。系统会排除转发和回复，并在 SQLite 中记录每日请求次数和资源数。结果不足 30 条时保留实际数量，不使用无关内容硬凑。X 套餐的实际单条价格和计费规则以 X Developer Console 当前页面为准，界面中的费用只是按配置估算。
+
+重点账号和关键词在 `radar/sources.py` 中维护；修改后无需改采集器。
+
+## 翻译配置
+
+翻译服务端使用阿里云百炼 DashScope 的 OpenAI 兼容接口，默认模型为 `deepseek-v4-flash-0731`：
+
+```dotenv
+DASHSCOPE_API_KEY=your-dashscope-key
+TRANSLATION_MODEL=deepseek-v4-flash-0731
+# DASHSCOPE_CHAT_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+```
+
+不要把 API Key 写入源码、plist、截图或 Git 历史。建议使用控制台的环境变量、密钥管理服务，并为公开过的 Key 重新生成。
+
+## API
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/items?range=24h&region=all&type=all&limit=100` | 获取排序后的资讯；时间范围支持 `24h/3d/7d` |
+| `GET` | `/api/sources` | 获取来源状态与 X 计费日资源数 |
+| `GET` | `/api/summary` | 获取总数、今日数、更新时间和刷新状态 |
+| `POST` | `/api/refresh` | 异步启动一次全量刷新 |
+| `POST` | `/api/translate` | 请求体 `{"text":"英文内容"}`，返回译文 |
+
+普通客户端只读 `/api/items`、`/api/sources` 和 `/api/summary`；只有用户明确刷新时才调用 `/api/refresh`。桌面客户端不会额外触发 X 采集。
+
+## 服务器部署
+
+生产服务默认监听 `127.0.0.1:8765`，推荐通过 SSH 隧道访问，不直接暴露端口：
+
+```bash
+sudo install -m 644 deploy/ai-radar.service /etc/systemd/system/ai-radar.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now ai-radar
+sudo systemctl status ai-radar
+```
+
+将环境变量保存到 systemd `EnvironmentFile` 指定的位置，并确保该文件权限为 `600`。`deploy/ai-radar.service` 默认假设项目路径为 `/opt/ai-radar`、运行用户为 `ubuntu`；换服务器时请按实际用户和路径调整。
+
+macOS 隧道模板是 `deploy/com.ai-radar.tunnel.plist.example`。复制后，将 `__SSH_KEY_PATH__` 和 `__SSH_USER_AND_HOST__` 替换为自己的值，再安装到 `~/Library/LaunchAgents/`：
+
+```bash
+cp deploy/com.ai-radar.tunnel.plist.example ~/Library/LaunchAgents/com.ai-radar.tunnel.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ai-radar.tunnel.plist
+```
+
+## macOS 悬浮球自启动
+
+先构建并安装 App，再复制 `desktop/com.ai-radar.desktop.plist.example`，把 `__APP_EXECUTABLE__` 替换成 App 内可执行文件的绝对路径：
+
+```bash
+./desktop/build.sh
+mkdir -p "$HOME/Applications"
+cp -R desktop/build/AIRadarDesktop.app "$HOME/Applications/"
+cp desktop/com.ai-radar.desktop.plist.example "$HOME/Library/LaunchAgents/com.ai-radar.desktop.plist"
+launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.ai-radar.desktop.plist"
+```
+
+右键悬浮球可退出当前进程；由于模板只设置 `RunAtLoad`，退出后不会被 `KeepAlive` 立即拉起，下次登录仍会自动启动。
+
+## 测试与质量检查
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q app.py radar tests
+```
+
+macOS 构建语法检查：
+
+```bash
+clang -fsyntax-only -fobjc-arc \
+  -framework AppKit -framework WebKit -framework Foundation \
+  desktop/AIRadarDesktop.m
+```
+
+## 上传 GitHub 前检查
+
+1. 确认 `.env.local`、`data/*.db`、`desktop/build/` 没有被 Git 跟踪。
+2. 删除 README、日志、截图和命令历史里的真实 Bearer Token、DashScope Key、服务器私钥路径。
+3. 把 `deploy/*.example` 和 `desktop/*.example` 中的占位符替换只放在本机副本，不要回写模板。
+4. 如果在上一级“思考”目录执行 Git，先单独创建 `ai-radar` 仓库；否则会把同级的其他项目一起上传。
+
+本项目目前没有提交任何密钥。若某个 Key 曾经公开出现在聊天、日志或截图中，应在对应控制台立即撤销并重新生成。
