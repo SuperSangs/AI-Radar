@@ -63,6 +63,15 @@ CREATE TABLE IF NOT EXISTS source_cursors (
     resource_day TEXT NOT NULL DEFAULT '',
     resource_count INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS daily_summaries (
+    summary_date TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    model TEXT NOT NULL,
+    item_count INTEGER NOT NULL DEFAULT 0,
+    generated_at TEXT NOT NULL
+);
 """
 
 
@@ -185,6 +194,10 @@ class Store:
             conn.execute(
                 "DELETE FROM items WHERE published_at < ?",
                 ((utc_now() - timedelta(days=30)).isoformat(),),
+            )
+            conn.execute(
+                "DELETE FROM daily_summaries WHERE summary_date < ?",
+                ((utc_now() - timedelta(days=30)).date().isoformat(),),
             )
 
     def update_source(self, key: str, *, count: int, latency_ms: int, error: str = "") -> None:
@@ -357,6 +370,62 @@ class Store:
                 }
             )
         return result
+
+    def get_daily_summary(self, summary_date: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM daily_summaries WHERE summary_date=?",
+                (summary_date,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return {
+            "summary_date": row["summary_date"],
+            "content_hash": row["content_hash"],
+            "payload": payload,
+            "model": row["model"],
+            "item_count": row["item_count"],
+            "generated_at": row["generated_at"],
+        }
+
+    def save_daily_summary(
+        self,
+        *,
+        summary_date: str,
+        content_hash: str,
+        payload: dict[str, Any],
+        model: str,
+        item_count: int,
+        generated_at: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO daily_summaries(
+                    summary_date, content_hash, payload, model, item_count, generated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(summary_date) DO UPDATE SET
+                    content_hash=excluded.content_hash,
+                    payload=excluded.payload,
+                    model=excluded.model,
+                    item_count=excluded.item_count,
+                    generated_at=excluded.generated_at
+                """,
+                (
+                    summary_date,
+                    content_hash,
+                    json.dumps(payload, ensure_ascii=False),
+                    model,
+                    item_count,
+                    generated_at,
+                ),
+            )
 
     def summary(self) -> dict[str, Any]:
         with self.connect() as conn:

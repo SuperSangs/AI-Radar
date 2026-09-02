@@ -29,6 +29,30 @@
       </div>
     </section>
 
+    <section class="daily-brief loading" id="daily-brief" aria-labelledby="daily-brief-title" aria-busy="true">
+      <div class="brief-heading">
+        <div>
+          <p class="eyebrow">DEEPSEEK DAILY BRIEF</p>
+          <h2 id="daily-brief-title">正在提炼今日情报</h2>
+        </div>
+        <button class="brief-refresh" id="brief-refresh" type="button" title="使用最新采集内容重新生成总结">重新总结</button>
+      </div>
+      <p class="brief-overview" id="brief-overview">DeepSeek 正在分析 AI Radar 最近 24 小时已经采集的内容。</p>
+      <div class="brief-themes" id="brief-themes" hidden></div>
+      <button class="brief-toggle" id="brief-toggle" type="button" aria-expanded="false" hidden>展开完整分析</button>
+      <div class="brief-details" id="brief-details" hidden>
+        <div>
+          <h3>值得继续追踪</h3>
+          <ul id="brief-signals"></ul>
+        </div>
+        <div>
+          <h3>学习与内容切入点</h3>
+          <ul id="brief-ideas"></ul>
+        </div>
+      </div>
+      <p class="brief-meta" id="brief-meta">首次生成通常需要几十秒，之后直接读取缓存。</p>
+    </section>
+
     <section class="filter-band" aria-label="榜单筛选">
       <div class="segmented" id="range-filter" aria-label="时间范围">
         <button type="button" data-value="24h" aria-pressed="true">24 小时</button>

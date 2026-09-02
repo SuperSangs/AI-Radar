@@ -63,7 +63,7 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) NSTextField *nativeStatus;
 @property(nonatomic, strong) NSTimer *timer;
-@property(nonatomic, copy) NSString *pendingScript;
+@property(nonatomic, strong) NSMutableArray<NSString *> *pendingScripts;
 @property(nonatomic) BOOL webViewReady;
 @property(nonatomic) BOOL panelVisible;
 @end
@@ -71,11 +71,20 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    pid_t currentPID = NSProcessInfo.processInfo.processIdentifier;
+    for (NSRunningApplication *application in [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.sangshuai.ai-radar-desktop"]) {
+        if (application.processIdentifier == currentPID) continue;
+        [application terminate];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!application.terminated) [application forceTerminate];
+        });
+    }
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    self.pendingScripts = [NSMutableArray array];
     [self buildBall];
     [self buildPanel];
-    [self loadFeed];
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(loadFeed) userInfo:nil repeats:YES];
+    [self reloadContent];
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(reloadContent) userInfo:nil repeats:YES];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification { [self.timer invalidate]; }
@@ -186,6 +195,32 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
     [task resume];
 }
 
+- (void)reloadContent {
+    [self loadFeed];
+    [self loadDailyBrief];
+}
+
+- (void)loadDailyBrief {
+    NSURL *url = [NSURL URLWithString:[kAPIBase stringByAppendingString:@"/api/daily-summary"]];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.timeoutInterval = 90;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger statusCode = [response isKindOfClass:NSHTTPURLResponse.class] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        NSString *script = @"window.renderDailyBrief({error:true});";
+        if (!error && data && statusCode == 200) {
+            id payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([payload isKindOfClass:NSDictionary.class]) {
+                NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+                if (json) {
+                    NSString *jsonString = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+                    script = [NSString stringWithFormat:@"window.renderDailyBrief(%@);", jsonString];
+                }
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ [self evaluateOrQueue:script]; });
+    }] resume];
+}
+
 - (void)sendStatus:(NSString *)status error:(BOOL)isError {
     NSString *escaped = [status stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
     NSString *script = [NSString stringWithFormat:@"window.setRadarStatus('%@', null, %s);", escaped, isError ? "true" : "false"];
@@ -194,7 +229,7 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
 
 - (void)evaluateOrQueue:(NSString *)script {
     if (!self.webViewReady) {
-        self.pendingScript = script;
+        [self.pendingScripts addObject:script];
         return;
     }
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
@@ -204,16 +239,16 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     self.webViewReady = YES;
-    if (self.pendingScript.length > 0) {
-        NSString *script = self.pendingScript;
-        self.pendingScript = nil;
+    NSArray<NSString *> *scripts = [self.pendingScripts copy];
+    [self.pendingScripts removeAllObjects];
+    for (NSString *script in scripts) {
         [self.webView evaluateJavaScript:script completionHandler:nil];
     }
 }
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
     if ([message.name isEqualToString:@"refresh"]) {
-        [self loadFeed];
+        [self reloadContent];
     } else if ([message.name isEqualToString:@"openURL"] && [message.body isKindOfClass:NSString.class]) {
         NSURL *url = [NSURL URLWithString:message.body];
         if (url) [[NSWorkspace sharedWorkspace] openURL:url];
@@ -268,13 +303,18 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
 - (NSString *)panelHTML {
     return @"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><style>"
     "*{box-sizing:border-box}body{margin:0;padding:18px 12px 14px;background:rgba(244,247,245,.94);color:#17201d;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif}"
-    ".head{display:flex;align-items:center;justify-content:space-between;padding:0 6px 12px}.brand{font-size:20px;font-weight:700}.sub{margin-top:4px;color:#69756f;font-size:11px}.actions{display:flex;align-items:center;gap:10px}.status{color:#69756f;font-size:10px}.refresh{border:0;background:transparent;color:#15624f;font-size:18px;cursor:pointer;padding:2px}.filters{display:flex;gap:6px;overflow-x:auto;padding:0 2px 12px}.filter{border:1px solid #d3dfd8;border-radius:14px;background:rgba(255,255,255,.58);color:#627069;font-size:11px;padding:5px 10px;cursor:pointer;white-space:nowrap}.filter.active{background:#1b6b55;border-color:#1b6b55;color:#fff}.list{display:flex;flex-direction:column;gap:8px}.item{display:block;color:inherit;padding:12px;border:1px solid #dce4df;border-radius:8px;background:rgba(255,255,255,.82);cursor:pointer}.item:hover{border-color:#78a896;background:#fff}.meta{color:#77827d;font-size:10px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.title{font-size:14px;font-weight:600;line-height:1.42}.summary{margin-top:6px;color:#59655f;font-size:11px;line-height:1.48;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.translation{margin-top:8px;border-left:2px solid #6fa58e;padding:7px 9px;color:#2d5548;background:#edf5f0;font-size:11px;line-height:1.5}.foot{margin-top:9px;color:#71807a;font-size:10px;display:flex;align-items:center;justify-content:space-between}.tag{color:#26755d}.tools{display:flex;align-items:center;gap:10px}.translate{border:0;background:transparent;color:#17674f;font-size:10px;padding:0;cursor:pointer}.empty{text-align:center;color:#69756f;font-size:12px;padding:48px 12px}.error{color:#a43f3f}</style></head><body>"
+    ".head{display:flex;align-items:center;justify-content:space-between;padding:0 6px 12px}.brand{font-size:20px;font-weight:700}.sub{margin-top:4px;color:#69756f;font-size:11px}.actions{display:flex;align-items:center;gap:10px}.status{color:#69756f;font-size:10px}.refresh{border:0;background:transparent;color:#15624f;font-size:18px;cursor:pointer;padding:2px}"
+    ".brief{margin:0 0 12px;padding:12px;border:1px solid #bad1c7;border-left:3px solid #28765c;border-radius:8px;background:linear-gradient(135deg,rgba(255,255,255,.94),rgba(230,243,236,.92))}.brief.loading{border-left-color:#c47a2d}.brief.failed{border-left-color:#a43f3f}.briefTop{display:flex;align-items:center;justify-content:space-between;gap:10px}.briefLabel{color:#1d6d54;font-size:10px;font-weight:700}.briefMeta{color:#75827c;font-size:9px}.briefTitle{margin-top:7px;font-size:14px;font-weight:700;line-height:1.4}.briefOverview{margin-top:6px;color:#4e5f58;font-size:11px;line-height:1.55}.briefThemes{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}.briefTheme{padding:3px 7px;border:1px solid #c6d9d0;border-radius:10px;color:#246e56;background:rgba(255,255,255,.7);font-size:9px}.briefToggle{margin-top:8px;padding:0;border:0;background:transparent;color:#17674f;font-size:9px;cursor:pointer}.briefMore{margin-top:9px;padding-top:8px;border-top:1px solid #d2dfda;color:#53625c;font-size:10px;line-height:1.5}.briefMore strong{display:block;margin:6px 0 3px;color:#2c453c;font-size:10px}.briefMore strong:first-child{margin-top:0}.briefMore ul{margin:0;padding-left:16px}.briefMore li+li{margin-top:3px}"
+    ".filters{display:flex;gap:6px;overflow-x:auto;padding:0 2px 12px}.filter{border:1px solid #d3dfd8;border-radius:14px;background:rgba(255,255,255,.58);color:#627069;font-size:11px;padding:5px 10px;cursor:pointer;white-space:nowrap}.filter.active{background:#1b6b55;border-color:#1b6b55;color:#fff}.list{display:flex;flex-direction:column;gap:8px}.item{display:block;color:inherit;padding:12px;border:1px solid #dce4df;border-radius:8px;background:rgba(255,255,255,.82);cursor:pointer}.item:hover{border-color:#78a896;background:#fff}.meta{color:#77827d;font-size:10px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.title{font-size:14px;font-weight:600;line-height:1.42}.summary{margin-top:6px;color:#59655f;font-size:11px;line-height:1.48;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.translation{margin-top:8px;border-left:2px solid #6fa58e;padding:7px 9px;color:#2d5548;background:#edf5f0;font-size:11px;line-height:1.5}.foot{margin-top:9px;color:#71807a;font-size:10px;display:flex;align-items:center;justify-content:space-between}.tag{color:#26755d}.tools{display:flex;align-items:center;gap:10px}.translate{border:0;background:transparent;color:#17674f;font-size:10px;padding:0;cursor:pointer}.empty{text-align:center;color:#69756f;font-size:12px;padding:48px 12px}.error{color:#a43f3f}</style></head><body>"
     "<div class='head'><div><div class='brand'>AI Radar</div><div class='sub'>重点账号与强相关 AI</div></div><div class='actions'><span class='status' id='status'>正在连接</span><button class='refresh' title='重新读取已采集内容' onclick=\"window.webkit.messageHandlers.refresh.postMessage('refresh')\">↻</button></div></div>"
+    "<div class='brief loading' id='brief'><div class='briefTop'><span class='briefLabel'>今日情报</span><span class='briefMeta' id='briefMeta'>DeepSeek 分析中</span></div><div class='briefTitle' id='briefTitle'>正在提炼今天的主要方向</div><div class='briefOverview' id='briefOverview'>只总结 AI Radar 最近 24 小时已经采集的内容。</div><div class='briefThemes' id='briefThemes'></div><button class='briefToggle' id='briefToggle' hidden onclick='toggleBrief()'>查看行动建议</button><div class='briefMore' id='briefMore' hidden></div></div>"
     "<div class='filters'><button class='filter active' data-filter='all' onclick=\"setFilter('all')\">全部</button><button class='filter' data-filter='project' onclick=\"setFilter('project')\">项目</button><button class='filter' data-filter='model' onclick=\"setFilter('model')\">模型</button><button class='filter' data-filter='paper' onclick=\"setFilter('paper')\">论文</button><button class='filter' data-filter='news' onclick=\"setFilter('news')\">资讯</button><button class='filter' data-filter='discussion' onclick=\"setFilter('discussion')\">讨论</button><button class='filter' data-filter='priority' onclick=\"setFilter('priority')\">重点账号</button></div>"
     "<div class='list' id='list'><div class='empty'>正在读取已采集内容</div></div>"
     "<script>function esc(s){return String(s||'').replace(/[&<>\\\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\\\"':'&quot;',\"'\":'&#39;'}[c]})}"
     "function date(s){try{return new Date(s).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}var allItems=[];var activeFilter='all';var translations={};"
     "function setFilter(filter){activeFilter=filter;document.querySelectorAll('.filter').forEach(function(b){b.classList.toggle('active',b.dataset.filter===filter)});renderFiltered()}"
+    "function toggleBrief(){var more=document.getElementById('briefMore');var button=document.getElementById('briefToggle');more.hidden=!more.hidden;button.textContent=more.hidden?'查看行动建议':'收起行动建议'}"
+    "function renderDailyBrief(data){var box=document.getElementById('brief');var title=document.getElementById('briefTitle');var overview=document.getElementById('briefOverview');var themes=document.getElementById('briefThemes');var more=document.getElementById('briefMore');var toggle=document.getElementById('briefToggle');box.classList.remove('loading','failed');if(data.error){box.classList.add('failed');title.textContent='今日总结暂时不可用';overview.textContent='已采集的信息仍可正常查看，稍后点击右上角刷新重试。';themes.innerHTML='';more.hidden=true;toggle.hidden=true;document.getElementById('briefMeta').textContent='DeepSeek';return}title.textContent=data.headline||'今日 AI 情报';overview.textContent=data.overview||'';themes.innerHTML=(data.themes||[]).map(function(t){return '<span class=\"briefTheme\" title=\"'+esc(t.summary)+'\">'+esc(t.name)+'</span>'}).join('');var signals=(data.key_signals||[]).map(function(x){return '<li>'+esc(x)+'</li>'}).join('');var ideas=(data.content_ideas||[]).map(function(x){return '<li>'+esc(x)+'</li>'}).join('');more.innerHTML=(signals?'<strong>值得追踪</strong><ul>'+signals+'</ul>':'')+(ideas?'<strong>学习与内容切入点</strong><ul>'+ideas+'</ul>':'');toggle.hidden=!(signals||ideas);more.hidden=true;document.getElementById('briefMeta').textContent='DeepSeek · '+(data.item_count||0)+'条'}"
     "function matches(i){if(activeFilter==='priority')return(i.tags||[]).indexOf('重点账号')>=0;if(activeFilter==='all')return true;return i.content_type===activeFilter}"
     "function renderItems(items){allItems=items||[];renderFiltered()}"
     "function openItem(event,node){if(event.target.closest('button'))return;window.webkit.messageHandlers.openURL.postMessage(node.dataset.url)}"

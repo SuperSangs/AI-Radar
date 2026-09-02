@@ -29,6 +29,16 @@ const elements = {
   liveDot: document.getElementById("live-dot"),
   search: document.getElementById("search-input"),
   region: document.getElementById("region-filter"),
+  dailyBrief: document.getElementById("daily-brief"),
+  briefTitle: document.getElementById("daily-brief-title"),
+  briefOverview: document.getElementById("brief-overview"),
+  briefThemes: document.getElementById("brief-themes"),
+  briefDetails: document.getElementById("brief-details"),
+  briefSignals: document.getElementById("brief-signals"),
+  briefIdeas: document.getElementById("brief-ideas"),
+  briefMeta: document.getElementById("brief-meta"),
+  briefRefresh: document.getElementById("brief-refresh"),
+  briefToggle: document.getElementById("brief-toggle"),
 };
 
 const typeNames = {
@@ -73,6 +83,64 @@ function friendlySourceError(error) {
   if (message.includes("404")) return "订阅地址已失效";
   if (message.includes("parseerror")) return "订阅格式暂时无法解析";
   return "采集失败，下次刷新会重试";
+}
+
+function renderDailyBrief(data) {
+  elements.dailyBrief.classList.remove("loading", "error");
+  elements.dailyBrief.classList.remove("expanded");
+  elements.dailyBrief.setAttribute("aria-busy", "false");
+  elements.briefTitle.textContent = data.headline;
+  elements.briefOverview.textContent = data.overview;
+  elements.briefThemes.replaceChildren();
+  elements.briefSignals.replaceChildren();
+  elements.briefIdeas.replaceChildren();
+
+  for (const theme of data.themes || []) {
+    const card = el("article", "brief-theme");
+    card.append(el("h3", "", theme.name), el("p", "", theme.summary));
+    elements.briefThemes.append(card);
+  }
+  for (const signal of data.key_signals || []) elements.briefSignals.append(el("li", "", signal));
+  for (const idea of data.content_ideas || []) elements.briefIdeas.append(el("li", "", idea));
+
+  elements.briefThemes.hidden = !(data.themes || []).length;
+  const hasDetails = Boolean((data.key_signals || []).length || (data.content_ideas || []).length);
+  elements.briefDetails.hidden = true;
+  elements.briefToggle.hidden = !hasDetails && !(data.themes || []).length;
+  elements.briefToggle.setAttribute("aria-expanded", "false");
+  elements.briefToggle.textContent = "展开完整分析";
+  const staleLabel = data.stale ? " · 当前为上次成功结果" : "";
+  elements.briefMeta.textContent = `DeepSeek · 基于 ${data.item_count || 0} 条已采集内容 · ${relativeTime(data.generated_at)}生成${staleLabel}`;
+}
+
+function renderDailyBriefError() {
+  elements.dailyBrief.classList.remove("loading");
+  elements.dailyBrief.classList.add("error");
+  elements.dailyBrief.setAttribute("aria-busy", "false");
+  elements.briefTitle.textContent = "今日总结暂时不可用";
+  elements.briefOverview.textContent = "已采集的情报榜单仍可正常使用；DeepSeek 接口恢复后会再次生成。";
+  elements.briefThemes.hidden = true;
+  elements.briefDetails.hidden = true;
+  elements.briefToggle.hidden = true;
+  elements.briefMeta.textContent = "你可以稍后点击“重新总结”。";
+}
+
+async function loadDailyBrief({ force = false } = {}) {
+  elements.briefRefresh.disabled = true;
+  if (force) {
+    elements.dailyBrief.classList.add("loading");
+    elements.dailyBrief.setAttribute("aria-busy", "true");
+    elements.briefMeta.textContent = "正在使用最新采集内容重新生成…";
+  }
+  try {
+    const response = await fetch("/api/daily-summary", { method: force ? "POST" : "GET" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderDailyBrief(await response.json());
+  } catch (error) {
+    renderDailyBriefError();
+  } finally {
+    elements.briefRefresh.disabled = false;
+  }
 }
 
 function renderItems(items) {
@@ -269,6 +337,7 @@ function updateRefreshState(refreshing, updatedAt, sources) {
   if ((wasRefreshing && !state.refreshing) || (dataChanged && !state.refreshing)) {
     itemsByRange.clear();
     loadItems({ force: true });
+    loadDailyBrief();
   }
   if (state.refreshing && !state.pollTimer) {
     state.pollTimer = window.setInterval(loadSummary, 4000);
@@ -320,6 +389,13 @@ elements.region.addEventListener("change", () => {
   renderCurrentItems();
 });
 elements.refresh.addEventListener("click", refresh);
+elements.briefRefresh.addEventListener("click", () => loadDailyBrief({ force: true }));
+elements.briefToggle.addEventListener("click", () => {
+  const expanded = elements.dailyBrief.classList.toggle("expanded");
+  elements.briefDetails.hidden = !expanded;
+  elements.briefToggle.setAttribute("aria-expanded", String(expanded));
+  elements.briefToggle.textContent = expanded ? "收起完整分析" : "展开完整分析";
+});
 document.getElementById("source-toggle").addEventListener("click", (event) => {
   const aside = document.querySelector(".sources");
   const expanded = aside.classList.toggle("expanded");
@@ -337,4 +413,5 @@ document.getElementById("date-label").textContent = new Intl.DateTimeFormat("zh-
 
 loadItems();
 loadSummary();
+loadDailyBrief();
 window.setInterval(loadSummary, 60_000);

@@ -19,4 +19,9 @@ clang "$ROOT/AIRadarDesktop.m" \
 
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
 
+# Sign the finished bundle, not only the Mach-O produced by clang. LaunchServices
+# rejects a linker-signed executable once Info.plist has been added to the bundle.
+codesign --force --deep --sign - --timestamp=none "$APP"
+codesign --verify --deep --strict "$APP"
+
 echo "Built $APP"

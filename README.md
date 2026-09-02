@@ -12,6 +12,7 @@ AI Radar 是一个面向“今天 AI 圈又出现了什么”的资讯聚合工�
 - X 热帖采用“重点账号优先 + 全网关键词补充”策略，默认每天最多一次、最多 50 条付费资源。
 - 其他免费来源每次最多保留 30 条，聚合看板不会再用 50 条全局上限截断它们。
 - Web 看板支持时间范围、地区、内容类型和关键词筛选。
+- DeepSeek 基于最近 24 小时已采集内容生成“今日情报”，提炼方向、关键信号和内容选题。
 - macOS 原生悬浮球支持拖动、右键退出、分类筛选、打开原文和英文翻译。
 - 翻译只在用户点击时调用阿里云百炼 DashScope，不影响采集成本。
 
@@ -99,13 +100,18 @@ X_MIN_INTERVAL_MINUTES=1440
 
 ## 翻译配置
 
-翻译服务端使用阿里云百炼 DashScope 的 OpenAI 兼容接口，默认模型为 `deepseek-v4-flash-0731`：
+翻译和今日总结都使用阿里云百炼 DashScope 的 OpenAI 兼容接口，默认模型为 `deepseek-v4-flash-0731`：
 
 ```dotenv
 DASHSCOPE_API_KEY=your-dashscope-key
 TRANSLATION_MODEL=deepseek-v4-flash-0731
+SUMMARY_MODEL=deepseek-v4-flash-0731
+SUMMARY_CACHE_HOURS=6
+SUMMARY_MAX_ITEMS=90
 # DASHSCOPE_CHAT_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
 ```
+
+`GET /api/daily-summary` 只分析 AI Radar 最近 24 小时已经采集并排序的数据，不额外抓取信息。结果按北京时间每天缓存，并在缓存期内复用；浏览器看板中的“重新总结”按钮会显式触发一次新生成。输入会先做来源平衡抽样，避免单一平台数量过多导致总结方向失真。
 
 不要把 API Key 写入源码、plist、截图或 Git 历史。建议使用控制台的环境变量、密钥管理服务，并为公开过的 Key 重新生成。
 
@@ -116,10 +122,12 @@ TRANSLATION_MODEL=deepseek-v4-flash-0731
 | `GET` | `/api/items?range=24h&region=all&type=all&limit=100` | 获取排序后的资讯；时间范围支持 `24h/3d/7d` |
 | `GET` | `/api/sources` | 获取来源状态与 X 计费日资源数 |
 | `GET` | `/api/summary` | 获取总数、今日数、更新时间和刷新状态 |
+| `GET` | `/api/daily-summary` | 获取或生成最近 24 小时的 DeepSeek 今日情报 |
+| `POST` | `/api/daily-summary` | 使用最新采集内容强制重新生成今日情报 |
 | `POST` | `/api/refresh` | 异步启动一次全量刷新 |
 | `POST` | `/api/translate` | 请求体 `{"text":"英文内容"}`，返回译文 |
 
-普通客户端只读 `/api/items`、`/api/sources` 和 `/api/summary`；只有用户明确刷新时才调用 `/api/refresh`。桌面客户端不会额外触发 X 采集。
+普通客户端只读 `/api/items`、`/api/sources`、`/api/summary` 和带缓存的 `/api/daily-summary`；只有用户明确刷新时才调用 `/api/refresh`。桌面客户端不会额外触发 X 采集。
 
 ## 服务器部署
 

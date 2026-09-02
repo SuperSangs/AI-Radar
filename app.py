@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from radar.collector import refresh_all
+from radar.daily_summary import DailySummaryError, get_or_create_daily_summary
 from radar.store import Store
 from radar.translator import TranslationError, translate_to_chinese
 
@@ -88,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"sources": STORE.list_sources()})
         elif parsed.path == "/api/summary":
             self.send_json({**STORE.summary(), **state})
+        elif parsed.path == "/api/daily-summary":
+            self.api_daily_summary()
         elif parsed.path.startswith("/api/"):
             self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
         else:
@@ -97,6 +100,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/translate":
             self.api_translate()
+            return
+        if path == "/api/daily-summary":
+            self.api_daily_summary(force=True)
             return
         if path != "/api/refresh":
             self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -133,6 +139,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         print(f"[translate] completed with {model}", flush=True)
         self.send_json({"translation": translation, "model": model})
+
+    def api_daily_summary(self, *, force: bool = False) -> None:
+        print(f"[daily-summary] requested force={force}", flush=True)
+        try:
+            payload = get_or_create_daily_summary(STORE, force=force)
+        except DailySummaryError as exc:
+            print(f"[daily-summary] failed: {exc}", flush=True)
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        print(
+            f"[daily-summary] ready model={payload['model']} cached={payload['cached']} "
+            f"items={payload['item_count']}",
+            flush=True,
+        )
+        self.send_json(payload)
 
     def api_items(self, params: dict[str, list[str]]) -> None:
         range_value = params.get("range", ["24h"])[0]
