@@ -6,6 +6,7 @@ import html
 import json
 import os
 import re
+import threading
 import time
 import urllib.parse
 import urllib.error
@@ -23,6 +24,14 @@ from .store import Store, utc_now
 
 
 USER_AGENT = "AIRadar/0.1 (+local personal research dashboard)"
+REDDIT_FEED_URL = "https://www.reddit.com/r/MachineLearning+LocalLLaMA/.rss?limit=50"
+REDDIT_SUBREDDITS = {
+    "reddit-ml": "MachineLearning",
+    "reddit-localllama": "LocalLLaMA",
+}
+REDDIT_CACHE_SECONDS = 120
+_REDDIT_FEED_LOCK = threading.Lock()
+_REDDIT_FEED_CACHE: dict[str, Any] = {"fetched_at": 0.0, "items": []}
 AI_TERMS = (
     " ai ", "artificial intelligence", "machine learning", "deep learning", "llm",
     "gpt", "claude", "gemini", "openai", "anthropic", "deepseek", "qwen", "mistral",
@@ -156,6 +165,14 @@ def _request_bytes(
         except urllib.error.URLError as exc:
             if attempt == 0 and "reset" in str(exc).lower():
                 time.sleep(0.4)
+                continue
+            if attempt == 0 and isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                retry_after = exc.headers.get("Retry-After") or exc.headers.get("X-RateLimit-Reset") or "2"
+                try:
+                    delay = max(1.0, min(12.0, float(retry_after)))
+                except ValueError:
+                    delay = 2.0
+                time.sleep(delay)
                 continue
             raise
     raise RuntimeError("unreachable")
@@ -425,25 +442,33 @@ def collect_devto(source: Source) -> list[dict[str, Any]]:
 
 
 def collect_reddit(source: Source) -> list[dict[str, Any]]:
-    payload = _request_json(source.url)
+    subreddit = REDDIT_SUBREDDITS.get(source.key)
+    if not subreddit:
+        raise ValueError(f"Unknown Reddit source: {source.key}")
+
+    with _REDDIT_FEED_LOCK:
+        age = time.monotonic() - float(_REDDIT_FEED_CACHE["fetched_at"])
+        if not _REDDIT_FEED_CACHE["items"] or age >= REDDIT_CACHE_SECONDS:
+            combined_source = Source(
+                "reddit-combined",
+                "Reddit",
+                "global",
+                "discussion",
+                REDDIT_FEED_URL,
+                "rss",
+            )
+            _REDDIT_FEED_CACHE["items"] = collect_rss(combined_source)
+            _REDDIT_FEED_CACHE["fetched_at"] = time.monotonic()
+        feed_items = [dict(item) for item in _REDDIT_FEED_CACHE["items"]]
+
     result = []
-    for child in payload.get("data", {}).get("children", []):
-        item = child.get("data", {})
-        if item.get("stickied"):
+    subreddit_path = f"/r/{subreddit.lower()}/"
+    for item in feed_items:
+        if subreddit_path not in item["url"].lower():
             continue
-        result.append(_base_item(
-            source,
-            external_id=item.get("id"),
-            title=item.get("title", ""),
-            url=f"https://www.reddit.com{item.get('permalink', '')}",
-            summary=item.get("selftext", ""),
-            author=item.get("author", ""),
-            published_at=item.get("created_utc"),
-            engagement=(item.get("score", 0) or 0) + (item.get("num_comments", 0) or 0) * 2,
-            raw_score=min(12, (item.get("score", 0) or 0) / 100),
-            tags=[item.get("link_flair_text")] if item.get("link_flair_text") else [],
-            metadata={"score": item.get("score", 0), "comments": item.get("num_comments", 0)},
-        ))
+        item["source_key"] = source.key
+        item["metadata"] = {**item["metadata"], "subreddit": subreddit, "via": "rss"}
+        result.append(item)
     return result
 
 
@@ -460,7 +485,7 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
     if not token:
         raise RuntimeError("X_BEARER_TOKEN is not configured")
 
-    max_results = _env_int("X_MAX_RESULTS", 30, 10, 100)
+    max_results = _env_int("X_MAX_RESULTS", 50, 10, 100)
     max_calls = _env_int("X_MAX_CALLS_PER_DAY", 1, 1, 24)
     min_interval = _env_int("X_MIN_INTERVAL_MINUTES", 1440, 30, 1440)
     allowed, cursor, reason = store.begin_source_request(
@@ -490,18 +515,24 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
     resource_count = 0
     next_pages: list[tuple[str, bool, str]] = []
 
-    # Reserve two ten-post pages for the watchlist, then use the final page for
-    # strongly related posts when the selected accounts have fewer results.
-    # Pagination can fill unused capacity without exceeding the daily limit.
-    initial_page_size = (
-        max(10, min(20, max_results // len(query_templates)))
-        if source.key == "x-ai"
-        else max_results
-    )
-    query_plan = [
-        (query, initial_page_size, priority, "")
-        for query, priority in query_templates
-    ]
+    # For the default 50-resource budget, reserve two 20-resource requests for
+    # watched accounts and ten resources for broader AI discovery. Pagination
+    # can fill unused capacity without exceeding the daily paid-resource cap.
+    if source.key == "x-ai" and max_results >= 30:
+        discovery_size = 10
+        priority_total = max_results - discovery_size
+        first_priority_size = priority_total // 2
+        second_priority_size = priority_total - first_priority_size
+        query_plan = [
+            (X_PRIORITY_QUERIES[0], first_priority_size, True, ""),
+            (X_PRIORITY_QUERIES[1], second_priority_size, True, ""),
+            (X_AI_QUERY, discovery_size, False, ""),
+        ]
+    else:
+        query_plan = [
+            (query, max_results, priority, "")
+            for query, priority in query_templates
+        ]
 
     while query_plan and resource_count < max_results:
         query, requested_results, priority, pagination_token = query_plan.pop(0)
@@ -608,7 +639,7 @@ ADAPTERS = {
 def collect_source(source: Source, store: Store) -> CollectionBatch:
     if source.adapter == "x":
         return collect_x(source, store)
-    return CollectionBatch(ADAPTERS[source.adapter](source))
+    return CollectionBatch(ADAPTERS[source.adapter](source)[:30])
 
 
 def refresh_all(store: Store, max_workers: int = 6) -> dict[str, Any]:

@@ -252,7 +252,7 @@ class Store:
             needle = f"%{query}%"
             params.extend([needle, needle, needle])
 
-        sql = f"SELECT *, {effective_time} AS effective_at FROM items WHERE {' AND '.join(conditions)} ORDER BY effective_at DESC LIMIT 500"
+        sql = f"SELECT *, {effective_time} AS effective_at FROM items WHERE {' AND '.join(conditions)} ORDER BY effective_at DESC LIMIT 3000"
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
 
@@ -263,7 +263,10 @@ class Store:
         now = utc_now()
         ranked: list[dict[str, Any]] = []
         for group in grouped.values():
-            best = max(group, key=lambda row: (row["raw_score"], row["engagement"]))
+            best = max(
+                group,
+                key=lambda row: (row["source_key"] == "x-ai", row["raw_score"], row["engagement"]),
+            )
             published = _parse_iso(best["effective_at"])
             age_hours = max(0.0, (now - published).total_seconds() / 3600)
             source = next((s for s in SOURCES if s.key == best["source_key"]), None)
@@ -274,7 +277,8 @@ class Store:
             quality = source_weight * 12.0 + min(12.0, float(best["raw_score"]))
             score = round(freshness + engagement + corroboration + quality, 1)
             sources = []
-            for row in group:
+            ordered_group = [best, *(row for row in group if row["id"] != best["id"])]
+            for row in ordered_group:
                 item_source = next((s for s in SOURCES if s.key == row["source_key"]), None)
                 sources.append(
                     {
@@ -286,6 +290,7 @@ class Store:
             ranked.append(
                 {
                     "id": best["id"],
+                    "source_key": best["source_key"],
                     "title": best["title"],
                     "url": best["url"],
                     "summary": best["summary"],
@@ -302,8 +307,28 @@ class Store:
                     "source_count": len({row["source_key"] for row in group}),
                 }
             )
-        ranked.sort(key=lambda item: (item["score"], item["published_at"]), reverse=True)
-        return ranked[: max(1, min(limit, 500))]
+        def priority_tier(item: dict[str, Any]) -> int:
+            if item["source_key"] != "x-ai":
+                return 0
+            return 2 if "重点账号" in item["tags"] else 1
+
+        ranked.sort(
+            key=lambda item: (priority_tier(item), item["score"], item["effective_at"]),
+            reverse=True,
+        )
+        max_dashboard_items = 50 + max(0, len(SOURCES) - 1) * 30
+        result_limit = max(1, min(limit, max_dashboard_items))
+        source_counts: dict[str, int] = defaultdict(int)
+        selected: list[dict[str, Any]] = []
+        for item in ranked:
+            source_limit = 50 if item["source_key"] == "x-ai" else 30
+            if source_counts[item["source_key"]] >= source_limit:
+                continue
+            selected.append(item)
+            source_counts[item["source_key"]] += 1
+            if len(selected) >= result_limit:
+                break
+        return selected
 
     def list_sources(self) -> list[dict[str, Any]]:
         with self.connect() as conn:

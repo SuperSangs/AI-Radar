@@ -9,7 +9,8 @@ AI Radar 是一个面向“今天 AI 圈又出现了什么”的资讯聚合工�
 - 24 个国内外信息源并发采集，单个来源失败不会阻塞全局。
 - SQLite 本地存储，按标题指纹跨来源去重，自动清理 30 天前数据。
 - 按新鲜度、互动量、跨源确认和来源质量计算综合分。
-- X 热帖采用“重点账号优先 + 全网关键词补充”策略，默认每天最多一次、最多 30 条资源。
+- X 热帖采用“重点账号优先 + 全网关键词补充”策略，默认每天最多一次、最多 50 条付费资源。
+- 其他免费来源每次最多保留 30 条，聚合看板不会再用 50 条全局上限截断它们。
 - Web 看板支持时间范围、地区、内容类型和关键词筛选。
 - macOS 原生悬浮球支持拖动、右键退出、分类筛选、打开原文和英文翻译。
 - 翻译只在用户点击时调用阿里云百炼 DashScope，不影响采集成本。
@@ -85,14 +86,14 @@ open build/AIRadarDesktop.app
 
 ```dotenv
 X_BEARER_TOKEN=your-token
-X_MAX_RESULTS=30
+X_MAX_RESULTS=50
 X_MAX_CALLS_PER_DAY=1
 X_MIN_INTERVAL_MINUTES=1440
 # 直连 api.x.com 不通时再填写：
 # X_HTTPS_PROXY=http://127.0.0.1:7890
 ```
 
-一次默认采集最多读取 30 个 tweet resources：前两页优先查询 30 个重点账号，最后一页用严格 AI 关键词补充。系统会排除转发和回复，并在 SQLite 中记录每日请求次数和资源数。结果不足 30 条时保留实际数量，不使用无关内容硬凑。X 套餐的实际单条价格和计费规则以 X Developer Console 当前页面为准，界面中的费用只是按配置估算。
+一次默认采集最多读取 50 个 tweet resources：前两组重点账号各预留最多 20 条，最后 10 条用严格 AI 关键词补充。系统会排除转发和回复，并在 SQLite 中记录每日请求次数和资源数。结果不足 50 条时保留实际数量，不使用无关内容硬凑。X 套餐的实际单条价格和计费规则以 X Developer Console 当前页面为准，界面中的费用只是按配置估算。
 
 重点账号和关键词在 `radar/sources.py` 中维护；修改后无需改采集器。
 
@@ -131,7 +132,7 @@ sudo systemctl enable --now ai-radar
 sudo systemctl status ai-radar
 ```
 
-将环境变量保存到 systemd `EnvironmentFile` 指定的位置，并确保该文件权限为 `600`。`deploy/ai-radar.service` 默认假设项目路径为 `/opt/ai-radar`、运行用户为 `ubuntu`；换服务器时请按实际用户和路径调整。
+将环境变量保存到 systemd `EnvironmentFile` 指定的 `/etc/ai-radar/env`，并确保该文件权限为 `600`。`deploy/ai-radar.service` 默认假设项目路径为 `/opt/ai-radar`、运行用户为 `ubuntu`；换服务器时请按实际用户和路径调整。真实环境文件、数据库、SSH 密钥和个性化 plist 都已被 `.gitignore` 排除，禁止提交到仓库。
 
 macOS 隧道模板是 `deploy/com.ai-radar.tunnel.plist.example`。复制后，将 `__SSH_KEY_PATH__` 和 `__SSH_USER_AND_HOST__` 替换为自己的值，再安装到 `~/Library/LaunchAgents/`：
 

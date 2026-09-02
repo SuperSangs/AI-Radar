@@ -8,7 +8,7 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/ai-radar
-EnvironmentFile=-/home/ubuntu/.config/ai-radar/env
+EnvironmentFile=-/etc/ai-radar/env
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/bin/python3 /opt/ai-radar/app.py serve --host 127.0.0.1 --port 8765
 Restart=on-failure

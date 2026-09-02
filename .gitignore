@@ -7,12 +7,17 @@ venv/
 .pytest_cache/
 
 # Local configuration and secrets
+.env
+.env.*
 .env.local
 .env.*.local
 !.env.example
 *.pem
 *.key
 *.p12
+*.pub
+authorized_keys
+known_hosts
 
 # Runtime data
 data/*.db
@@ -23,6 +28,8 @@ data/*.sqlite-*
 # macOS and generated desktop artifacts
 .DS_Store
 desktop/build/
+deploy/*.plist
+desktop/*.plist
 
 # Local logs and editor files
 *.log

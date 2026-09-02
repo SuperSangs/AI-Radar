@@ -104,7 +104,11 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
     CGFloat width = 420;
     CGFloat height = MIN(NSHeight(screen) - 48, 760);
     NSRect frame = NSMakeRect(NSMaxX(screen) - width - 18, NSMinY(screen) + 24, width, height);
-    self.panelWindow = [[NSPanel alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
+    NSWindowStyleMask panelStyle = NSWindowStyleMaskTitled |
+        NSWindowStyleMaskClosable |
+        NSWindowStyleMaskResizable |
+        NSWindowStyleMaskNonactivatingPanel;
+    self.panelWindow = [[NSPanel alloc] initWithContentRect:frame styleMask:panelStyle backing:NSBackingStoreBuffered defer:NO];
     self.panelWindow.title = @"AI Radar";
     self.panelWindow.titleVisibility = NSWindowTitleHidden;
     self.panelWindow.titlebarAppearsTransparent = YES;
@@ -112,6 +116,8 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
     self.panelWindow.level = NSFloatingWindowLevel;
     self.panelWindow.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
     self.panelWindow.releasedWhenClosed = NO;
+    self.panelWindow.contentMinSize = NSMakeSize(360, 420);
+    [self.panelWindow setFrameAutosaveName:@"AIRadarPanelWindow"];
 
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     [configuration.userContentController addScriptMessageHandler:self name:@"openURL"];
@@ -155,7 +161,7 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
         [NSURLQueryItem queryItemWithName:@"range" value:@"24h"],
         [NSURLQueryItem queryItemWithName:@"region" value:@"all"],
         [NSURLQueryItem queryItemWithName:@"type" value:@"all"],
-        [NSURLQueryItem queryItemWithName:@"limit" value:@"50"]
+        [NSURLQueryItem queryItemWithName:@"limit" value:@"740"]
     ];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:components.URL completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{

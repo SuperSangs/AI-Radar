@@ -6,7 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from radar.collector import _extract_loose_rss, canonicalize_url, collect_rss, collect_x, is_ai_related, title_fingerprint
+from radar import collector as collector_module
+from radar.collector import _extract_loose_rss, canonicalize_url, collect_reddit, collect_rss, collect_x, is_ai_related, title_fingerprint
 from radar.sources import SOURCE_BY_KEY, X_AI_QUERY, X_PRIORITY_HANDLES, X_PRIORITY_QUERIES, Source
 from radar.store import Store
 
@@ -21,6 +22,24 @@ RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
     <pubDate>Wed, 15 Jul 2026 08:00:00 GMT</pubDate>
   </item>
 </channel></rss>"""
+
+REDDIT_RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Machine learning discussion</title>
+    <link href="https://www.reddit.com/r/MachineLearning/comments/abc123/example/"/>
+    <id>t3_abc123</id>
+    <updated>2026-09-02T05:00:00+00:00</updated>
+    <content>First discussion</content>
+  </entry>
+  <entry>
+    <title>Local model discussion</title>
+    <link href="https://www.reddit.com/r/LocalLLaMA/comments/def456/example/"/>
+    <id>t3_def456</id>
+    <updated>2026-09-02T05:01:00+00:00</updated>
+    <content>Second discussion</content>
+  </entry>
+</feed>"""
 
 
 class CollectorTests(unittest.TestCase):
@@ -53,6 +72,21 @@ class CollectorTests(unittest.TestCase):
         entries = _extract_loose_rss(broken)
         self.assertEqual(entries[0]["title"], "AI & tools")
         self.assertEqual(entries[0]["link"], "https://example.com/ai")
+
+    @patch("radar.collector._request_bytes", return_value=REDDIT_RSS)
+    def test_reddit_sources_share_feed_and_split_results(self, request_bytes: object) -> None:
+        collector_module._REDDIT_FEED_CACHE["fetched_at"] = 0.0
+        collector_module._REDDIT_FEED_CACHE["items"] = []
+
+        ml_items = collect_reddit(SOURCE_BY_KEY["reddit-ml"])
+        llama_items = collect_reddit(SOURCE_BY_KEY["reddit-localllama"])
+
+        self.assertEqual(request_bytes.call_count, 1)
+        self.assertEqual([item["external_id"] for item in ml_items], ["t3_abc123"])
+        self.assertEqual([item["external_id"] for item in llama_items], ["t3_def456"])
+        self.assertEqual(ml_items[0]["source_key"], "reddit-ml")
+        self.assertEqual(llama_items[0]["source_key"], "reddit-localllama")
+        self.assertEqual(llama_items[0]["metadata"]["via"], "rss")
 
     @patch.dict("os.environ", {"X_BEARER_TOKEN": "test-token"}, clear=True)
     @patch("radar.collector._request_json")
@@ -92,7 +126,7 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(batch.items[0]["region"], "china")
             self.assertEqual(batch.items[0]["engagement"], 34)
             requested_url = request_json.call_args.args[0]
-            self.assertIn("max_results=30", requested_url)
+            self.assertIn("max_results=50", requested_url)
             self.assertNotIn("expansions", requested_url)
             self.assertEqual(request_json.call_args.args[1]["Authorization"], "Bearer test-token")
 
@@ -145,14 +179,61 @@ class CollectorTests(unittest.TestCase):
         self.assertTrue(all("重点账号" in item["tags"] for item in batch.items[:20]))
         self.assertTrue(all("重点账号" not in item["tags"] for item in batch.items[20:]))
         requested_urls = [call.args[0] for call in request_json.call_args_list]
-        self.assertIn("max_results=10", requested_urls[0])
-        self.assertIn("max_results=10", requested_urls[1])
+        self.assertIn("max_results=20", requested_urls[0])
+        self.assertIn("max_results=20", requested_urls[1])
         self.assertIn("max_results=10", requested_urls[2])
         self.assertIn("DeepSeek", requested_urls[2])
         self.assertTrue(all("since_id" not in url and "start_time" not in url for url in requested_urls))
 
 
 class StoreTests(unittest.TestCase):
+    def test_default_ranking_prioritizes_x_and_applies_source_quotas(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "test.db")
+            now = datetime.now(UTC)
+
+            def item(source_key: str, external_id: str, *, content_type: str, age_hours: int, engagement: int, raw_score: float, tags: list[str] | None = None) -> dict[str, object]:
+                timestamp = (now - timedelta(hours=age_hours)).isoformat()
+                title = f"{source_key} item {external_id}"
+                return {
+                    "source_key": source_key,
+                    "external_id": external_id,
+                    "title": title,
+                    "url": f"https://example.com/{source_key}/{external_id}",
+                    "canonical_url": f"https://example.com/{source_key}/{external_id}",
+                    "summary": "",
+                    "author": "",
+                    "published_at": timestamp,
+                    "collected_at": timestamp,
+                    "region": "global",
+                    "content_type": content_type,
+                    "raw_score": raw_score,
+                    "engagement": engagement,
+                    "tags": tags or [],
+                    "metadata": {},
+                    "fingerprint": title_fingerprint(title),
+                }
+
+            records = [
+                item("hf-models", f"hf-{index}", content_type="model", age_hours=0, engagement=100_000, raw_score=12)
+                for index in range(35)
+            ]
+            for source_key in (
+                "openai-news", "techcrunch-ai", "github-llm", "arxiv-ai", "hf-spaces",
+                "devto-ai", "qbitai", "reddit-ml", "simon-willison", "solidot",
+            ):
+                records.append(item(source_key, source_key, content_type="news", age_hours=6, engagement=1, raw_score=0))
+            records.append(item("x-ai", "x-priority", content_type="news", age_hours=20, engagement=1, raw_score=0, tags=["X", "重点账号"]))
+            store.upsert_items(records)
+
+            items = store.query_items(hours=24, limit=50)
+            primary_sources = [entry["sources"][0]["key"] for entry in items]
+
+            self.assertEqual(primary_sources[0], "x-ai")
+            self.assertEqual(primary_sources.count("hf-models"), 30)
+            self.assertEqual(len(items), 41)
+            self.assertEqual(len(set(primary_sources)), 12)
+
     def test_store_ranks_and_deduplicates_same_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = Store(Path(temp_dir) / "test.db")
