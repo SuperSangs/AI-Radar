@@ -1,7 +1,23 @@
 #import <Cocoa/Cocoa.h>
+#import <ServiceManagement/ServiceManagement.h>
 #import <WebKit/WebKit.h>
+#import <arpa/inet.h>
+#import <sys/socket.h>
+#import <unistd.h>
 
 static NSString * const kAPIBase = @"http://127.0.0.1:8765";
+
+static BOOL AIRadarLocalPortIsOpen(void) {
+    int socketFD = socket(AF_INET, SOCK_STREAM, 0);
+    if (socketFD < 0) return NO;
+    struct sockaddr_in address = {0};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(8765);
+    inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+    BOOL connected = connect(socketFD, (struct sockaddr *)&address, sizeof(address)) == 0;
+    close(socketFD);
+    return connected;
+}
 
 @interface BallView : NSView
 @property(nonatomic, copy) dispatch_block_t clickHandler;
@@ -63,9 +79,13 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) NSTextField *nativeStatus;
 @property(nonatomic, strong) NSTimer *timer;
+@property(nonatomic, strong) NSTask *tunnelTask;
 @property(nonatomic, strong) NSMutableArray<NSString *> *pendingScripts;
 @property(nonatomic) BOOL webViewReady;
 @property(nonatomic) BOOL panelVisible;
+@property(nonatomic) BOOL tunnelRetryScheduled;
+@property(nonatomic) BOOL terminating;
+@property(nonatomic) NSUInteger tunnelRetryCount;
 @end
 
 @implementation AppDelegate
@@ -80,14 +100,83 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
         });
     }
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    [self registerLoginItem];
     self.pendingScripts = [NSMutableArray array];
     [self buildBall];
     [self buildPanel];
+    [self ensureTunnel];
     [self reloadContent];
     self.timer = [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(reloadContent) userInfo:nil repeats:YES];
 }
 
-- (void)applicationWillTerminate:(NSNotification *)notification { [self.timer invalidate]; }
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    self.terminating = YES;
+    [self.timer invalidate];
+    self.tunnelTask.terminationHandler = nil;
+    if (self.tunnelTask.isRunning) [self.tunnelTask terminate];
+}
+
+- (void)registerLoginItem {
+    if (@available(macOS 13.0, *)) {
+        SMAppService *service = SMAppService.mainAppService;
+        if (service.status == SMAppServiceStatusNotRegistered) {
+            NSError *error = nil;
+            if (![service registerAndReturnError:&error]) {
+                NSLog(@"AI Radar could not register as a login item: %@", error);
+            }
+        } else if (service.status == SMAppServiceStatusRequiresApproval) {
+            NSLog(@"AI Radar login item requires approval in System Settings");
+        }
+    }
+}
+
+- (void)ensureTunnel {
+    if (self.terminating || AIRadarLocalPortIsOpen() || self.tunnelTask.isRunning) return;
+    NSString *plistPath = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/LaunchAgents/com.sangshuai.ai-radar-tunnel.plist"];
+    NSDictionary *configuration = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    NSArray *arguments = configuration[@"ProgramArguments"];
+    if (![arguments isKindOfClass:NSArray.class] || arguments.count < 2 || ![arguments[0] isEqualToString:@"/usr/bin/ssh"]) {
+        NSLog(@"AI Radar tunnel configuration is missing or invalid: %@", plistPath);
+        return;
+    }
+
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:arguments[0]];
+    task.arguments = [arguments subarrayWithRange:NSMakeRange(1, arguments.count - 1)];
+    task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    __weak typeof(self) weakSelf = self;
+    task.terminationHandler = ^(NSTask *finishedTask) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.terminating) return;
+            if (strongSelf.tunnelTask == finishedTask) strongSelf.tunnelTask = nil;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [strongSelf ensureTunnel];
+            });
+        });
+    };
+    self.tunnelTask = task;
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) {
+        self.tunnelTask = nil;
+        NSLog(@"AI Radar could not start its SSH tunnel: %@", error);
+    }
+}
+
+- (void)scheduleTunnelRetry {
+    if (self.tunnelRetryScheduled || self.terminating) return;
+    self.tunnelRetryScheduled = YES;
+    [self ensureTunnel];
+    NSUInteger exponent = MIN(self.tunnelRetryCount, (NSUInteger)3);
+    NSTimeInterval delay = MIN(30.0, 3.0 * (1 << exponent));
+    self.tunnelRetryCount += 1;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self.tunnelRetryScheduled = NO;
+        [self loadFeed];
+        [self loadDailyBrief];
+    });
+}
 
 - (void)buildBall {
     CGFloat size = 54;
@@ -176,8 +265,10 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error || !data || ![response isKindOfClass:NSHTTPURLResponse.class] || [(NSHTTPURLResponse *)response statusCode] != 200) {
                 [self sendStatus:@"服务未连接" error:YES];
+                [self scheduleTunnelRetry];
                 return;
             }
+            self.tunnelRetryCount = 0;
             NSError *jsonError = nil;
             NSDictionary *payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
             if (jsonError || ![payload isKindOfClass:NSDictionary.class]) {
@@ -196,6 +287,7 @@ static NSString * const kAPIBase = @"http://127.0.0.1:8765";
 }
 
 - (void)reloadContent {
+    [self ensureTunnel];
     [self loadFeed];
     [self loadDailyBrief];
 }

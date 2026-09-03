@@ -13,6 +13,7 @@ clang "$ROOT/AIRadarDesktop.m" \
   -o "$APP/Contents/MacOS/$APP_NAME" \
   -fobjc-arc \
   -framework AppKit \
+  -framework ServiceManagement \
   -framework WebKit \
   -framework Foundation \
   -O

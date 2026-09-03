@@ -87,7 +87,7 @@ flowchart LR
 
 ### macOS 悬浮球
 
-桌面 App 是原生 AppKit 程序，面板内部使用 WebKit 渲染轻量 HTML。启动后每分钟读取 `/api/items` 和带缓存的 `/api/daily-summary`，不调用采集刷新接口。悬浮球顶部先显示今日方向，行动建议可展开；点击条目交给系统默认浏览器打开，英文内容通过 `/api/translate` 翻译并在卡片内展开。
+桌面 App 是原生 AppKit 程序，面板内部使用 WebKit 渲染轻量 HTML。启动后会注册为 macOS 登录项，并根据用户本地 LaunchAgent 配置自行维护 SSH 隧道；连接失败时会在后台重建隧道并快速重试。应用每分钟读取 `/api/items` 和带缓存的 `/api/daily-summary`，不调用采集刷新接口。悬浮球顶部先显示今日方向，行动建议可展开；点击条目交给系统默认浏览器打开，英文内容通过 `/api/translate` 翻译并在卡片内展开。
 
 ## 8. 运行与部署边界
 
