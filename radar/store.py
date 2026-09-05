@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from .sources import SOURCES
+from .sources import SOURCES, is_model_research
 
 
 SCHEMA = """
@@ -305,6 +305,18 @@ class Store:
             metadata = json.loads(best["metadata"])
             metrics = metadata.get("metrics", {}) if isinstance(metadata, dict) else {}
             discussion_score = float(metadata.get("discussion_score", 0) or 0) if isinstance(metadata, dict) else 0.0
+            tags = json.loads(best["tags"])
+            model_relevant = best["content_type"] != "paper" or is_model_research(
+                best["title"], best["summary"], tags
+            )
+            is_research_source = bool(source and source.kind == "paper")
+            if best["content_type"] == "paper" and (not model_relevant or not is_research_source):
+                continue
+            paper_metrics = {
+                "upvotes": int(metadata.get("upvotes", 0) or 0),
+                "comments": int(metadata.get("comments", 0) or 0),
+                "github_stars": int(metadata.get("github_stars", 0) or 0),
+            } if isinstance(metadata, dict) else {}
             sources = []
             ordered_group = [best, *(row for row in group if row["id"] != best["id"])]
             for row in ordered_group:
@@ -333,7 +345,9 @@ class Store:
                     "engagement": best["engagement"],
                     "metrics": metrics,
                     "discussion_score": discussion_score,
-                    "tags": json.loads(best["tags"]),
+                    "paper_metrics": paper_metrics,
+                    "model_relevant": model_relevant,
+                    "tags": tags,
                     "sources": sources,
                     "source_count": len({row["source_key"] for row in group}),
                 }

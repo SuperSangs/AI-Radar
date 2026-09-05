@@ -80,6 +80,16 @@ function xMetricSummary(item) {
   return parts.join(" · ");
 }
 
+function paperMetricSummary(item) {
+  if (item.content_type !== "paper" || !item.paper_metrics) return "";
+  const metrics = item.paper_metrics;
+  const parts = [];
+  if (metrics.upvotes) parts.push(`${compactCount(metrics.upvotes)} 赞同`);
+  if (metrics.comments) parts.push(`${compactCount(metrics.comments)} 讨论`);
+  if (metrics.github_stars) parts.push(`${compactCount(metrics.github_stars)} GitHub stars`);
+  return parts.join(" · ");
+}
+
 function sourceLink(source) {
   const link = el("a", "source-chip", source.name);
   link.href = source.url;
@@ -176,8 +186,8 @@ function renderItems(items) {
     if (item.author) meta.append(el("span", "", item.author));
     const discoveryDelay = new Date(item.discovered_at).getTime() - new Date(item.published_at).getTime();
     meta.append(el("span", "", discoveryDelay > 12 * 3600 * 1000 ? `${relativeTime(item.effective_at)}发现` : relativeTime(item.published_at)));
-    const xMetrics = xMetricSummary(item);
-    if (xMetrics) meta.append(el("span", "x-metrics", xMetrics));
+    const communityMetrics = xMetricSummary(item) || paperMetricSummary(item);
+    if (communityMetrics) meta.append(el("span", "x-metrics", communityMetrics));
     else if (item.engagement > 0) meta.append(el("span", "", `${item.engagement.toLocaleString()} 热度`));
 
     const title = el("h3", "item-title");
@@ -251,6 +261,7 @@ function filterItems(items) {
     if (state.region !== "all" && item.region !== state.region) return false;
     if (state.type !== "all" && item.content_type !== state.type) return false;
     if (state.type === "discussion" && item.source_key !== "x-ai" && item.engagement < 500) return false;
+    if (state.type === "paper" && !item.model_relevant) return false;
     if (!query) return true;
     const searchable = [
       item.title,
@@ -390,10 +401,11 @@ function bindPressedGroup(id, key) {
     if (!button) return;
     for (const peer of button.parentElement.querySelectorAll("button")) peer.setAttribute("aria-pressed", String(peer === button));
     state[key] = button.dataset.value;
-    if (key === "type" && state.type === "discussion" && state.range === "24h") {
-      state.range = "3d";
+    const expandedRange = state.type === "discussion" ? "3d" : state.type === "paper" ? "7d" : "";
+    if (key === "type" && expandedRange && state.range === "24h") {
+      state.range = expandedRange;
       for (const rangeButton of document.querySelectorAll("#range-filter button")) {
-        rangeButton.setAttribute("aria-pressed", String(rangeButton.dataset.value === "3d"));
+        rangeButton.setAttribute("aria-pressed", String(rangeButton.dataset.value === expandedRange));
       }
       loadItems();
       return;

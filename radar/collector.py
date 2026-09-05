@@ -20,7 +20,7 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any
 
-from .sources import SOURCES, X_AI_QUERY, X_PRIORITY_QUERIES, Source
+from .sources import SOURCES, X_AI_QUERY, X_PRIORITY_QUERIES, Source, is_model_research
 from .store import Store, utc_now
 
 
@@ -359,19 +359,37 @@ def collect_hf_papers(source: Source) -> list[dict[str, Any]]:
         title = paper.get("title") or entry.get("title")
         if not paper_id or not title:
             continue
+        summary = paper.get("summary") or entry.get("summary") or paper.get("abstract", "")
+        keywords = [str(keyword) for keyword in (paper.get("ai_keywords") or []) if keyword]
+        if not is_model_research(title, summary, keywords):
+            continue
         authors = paper.get("authors") or []
         author_text = ", ".join(a.get("name", "") if isinstance(a, dict) else str(a) for a in authors[:3])
+        upvotes = int(paper.get("upvotes", 0) or entry.get("upvotes", 0) or 0)
+        comments = int(entry.get("numComments", 0) or paper.get("numComments", 0) or 0)
+        github_stars = int(paper.get("githubStars", 0) or 0)
+        community_featured_at = paper.get("submittedOnDailyAt") or entry.get("submittedOnDailyAt")
+        paper_published_at = paper.get("publishedAt") or entry.get("publishedAt")
+        engagement = upvotes * 4 + comments * 12 + min(github_stars, 500)
         result.append(_base_item(
             source,
             external_id=paper_id,
             title=title,
             url=f"https://huggingface.co/papers/{paper_id}",
-            summary=paper.get("summary") or paper.get("abstract", ""),
+            summary=summary,
             author=author_text,
-            published_at=paper.get("publishedAt") or entry.get("publishedAt"),
-            engagement=entry.get("upvotes", 0) or paper.get("upvotes", 0),
-            raw_score=min(12, (entry.get("upvotes", 0) or 0) / 5),
-            tags=["paper"],
+            published_at=community_featured_at or paper_published_at,
+            engagement=engagement,
+            raw_score=min(12, math.log1p(engagement) * 1.5),
+            tags=["社区热门", "模型强相关", *keywords[:5]],
+            metadata={
+                "upvotes": upvotes,
+                "comments": comments,
+                "github_stars": github_stars,
+                "community_featured_at": community_featured_at,
+                "paper_published_at": paper_published_at,
+                "discussion_id": paper.get("discussionId"),
+            },
         ))
     return result
 
@@ -419,7 +437,13 @@ def collect_arxiv(source: Source) -> list[dict[str, Any]]:
         "max_results": 35,
     })
     dynamic = Source(source.key, source.name, source.region, source.kind, f"{source.url}?{params}", "rss", source.weight)
-    return collect_rss(dynamic)
+    result = []
+    for item in collect_rss(dynamic):
+        if not is_model_research(item["title"], item["summary"], item["tags"]):
+            continue
+        item["tags"] = list(dict.fromkeys(["模型强相关", *item["tags"]]))
+        result.append(item)
+    return result
 
 
 def collect_devto(source: Source) -> list[dict[str, Any]]:

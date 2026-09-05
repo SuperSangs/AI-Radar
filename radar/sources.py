@@ -44,6 +44,22 @@ X_PRIORITY_QUERIES = (
 
 X_AI_QUERY = f"{X_AI_TERMS} has:links -is:retweet -is:reply"
 
+MODEL_RESEARCH_TERMS = (
+    "large language model", "language model", "foundation model", "world model",
+    "vision-language", "multimodal model", "generative model", "neural model",
+    "model training", "model evaluation", "model architecture", "model inference",
+    "llm", "vlm", "transformer", "diffusion", "mixture of experts", "moe",
+    "agent", "reasoning", "reinforcement learning", "rlhf", "rlvr",
+    "distillation", "fine-tun", "pretrain", "quantization", "token", "embedding",
+    "大语言模型", "基础模型", "多模态模型", "生成模型", "模型训练", "模型推理",
+    "智能体", "强化学习", "蒸馏", "微调", "量化",
+)
+
+
+def is_model_research(title: str, summary: str = "", tags: tuple[str, ...] | list[str] = ()) -> bool:
+    haystack = " ".join((title, summary, *[str(tag) for tag in tags])).lower()
+    return any(term in haystack for term in MODEL_RESEARCH_TERMS)
+
 
 SOURCES = (
     Source("github-llm", "GitHub LLM 新项目", "global", "project", "https://api.github.com/search/repositories", "github", 1.35),

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from radar import collector as collector_module
-from radar.collector import _extract_loose_rss, canonicalize_url, collect_reddit, collect_rss, collect_x, is_ai_related, title_fingerprint
+from radar.collector import _extract_loose_rss, canonicalize_url, collect_hf_papers, collect_reddit, collect_rss, collect_x, is_ai_related, title_fingerprint
 from radar.sources import SOURCE_BY_KEY, X_AI_QUERY, X_PRIORITY_HANDLES, X_PRIORITY_QUERIES, Source
 from radar.store import Store
 
@@ -87,6 +87,42 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(ml_items[0]["source_key"], "reddit-ml")
         self.assertEqual(llama_items[0]["source_key"], "reddit-localllama")
         self.assertEqual(llama_items[0]["metadata"]["via"], "rss")
+
+    @patch("radar.collector._request_json")
+    def test_hf_papers_keeps_model_research_and_uses_community_heat(self, request_json: object) -> None:
+        request_json.return_value = [{
+            "numComments": 3,
+            "paper": {
+                "id": "2609.00001",
+                "title": "Rethinking On-Policy Distillation of Large Language Models",
+                "summary": "We improve LLM reasoning through on-policy distillation.",
+                "publishedAt": "2026-09-02T00:00:00Z",
+                "submittedOnDailyAt": "2026-09-05T00:00:00Z",
+                "upvotes": 120,
+                "githubStars": 40,
+                "ai_keywords": ["large language model", "distillation", "reasoning"],
+            },
+        }, {
+            "numComments": 1,
+            "paper": {
+                "id": "2609.00002",
+                "title": "A Common Measure of Communication for Speech Interfaces",
+                "summary": "A measure of communication efficiency for clinical interfaces.",
+                "publishedAt": "2026-09-02T00:00:00Z",
+                "submittedOnDailyAt": "2026-09-05T00:00:00Z",
+                "upvotes": 500,
+                "ai_keywords": ["mutual information", "speech interface"],
+            },
+        }]
+
+        items = collect_hf_papers(SOURCE_BY_KEY["hf-papers"])
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["external_id"], "2609.00001")
+        self.assertEqual(items[0]["published_at"], "2026-09-05T00:00:00+00:00")
+        self.assertEqual(items[0]["engagement"], 556)
+        self.assertIn("模型强相关", items[0]["tags"])
+        self.assertEqual(items[0]["metadata"]["upvotes"], 120)
 
     @patch.dict("os.environ", {"X_BEARER_TOKEN": "test-token"}, clear=True)
     @patch("radar.collector._request_json")
@@ -237,6 +273,65 @@ class CollectorTests(unittest.TestCase):
 
 
 class StoreTests(unittest.TestCase):
+    def test_paper_query_excludes_unrelated_research_and_exposes_community_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "test.db")
+            timestamp = datetime.now(UTC).isoformat()
+
+            def paper(
+                external_id: str,
+                title: str,
+                summary: str,
+                metadata: dict[str, int],
+                source_key: str = "hf-papers",
+            ) -> dict[str, object]:
+                return {
+                    "source_key": source_key,
+                    "external_id": external_id,
+                    "title": title,
+                    "url": f"https://huggingface.co/papers/{external_id}",
+                    "canonical_url": f"https://huggingface.co/papers/{external_id}",
+                    "summary": summary,
+                    "author": "",
+                    "published_at": timestamp,
+                    "collected_at": timestamp,
+                    "region": "global",
+                    "content_type": "paper",
+                    "raw_score": 10,
+                    "engagement": 500,
+                    "tags": [],
+                    "metadata": metadata,
+                    "fingerprint": title_fingerprint(title),
+                }
+
+            store.upsert_items([
+                paper(
+                    "model-paper",
+                    "Efficient Reasoning for Large Language Models",
+                    "A new inference method for LLM reasoning.",
+                    {"upvotes": 88, "comments": 7, "github_stars": 120},
+                ),
+                paper(
+                    "unrelated-paper",
+                    "A Longitudinal Study of Urban Commuting",
+                    "We study how commuters select rail and bus routes.",
+                    {"upvotes": 900, "comments": 40, "github_stars": 0},
+                ),
+                paper(
+                    "social-post",
+                    "A Viral Post About Large Language Models",
+                    "A social post that mentions an LLM paper but is not the paper itself.",
+                    {},
+                    source_key="x-ai",
+                ),
+            ])
+
+            items = store.query_items(hours=24, content_type="paper")
+
+            self.assertEqual([item["title"] for item in items], ["Efficient Reasoning for Large Language Models"])
+            self.assertTrue(items[0]["model_relevant"])
+            self.assertEqual(items[0]["paper_metrics"], {"upvotes": 88, "comments": 7, "github_stars": 120})
+
     def test_default_ranking_prioritizes_x_and_applies_source_quotas(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = Store(Path(temp_dir) / "test.db")
