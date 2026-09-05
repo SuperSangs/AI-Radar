@@ -22,7 +22,7 @@ X_PRIORITY_HANDLES = (
     "stevenbjohnson", "amandaaskell", "boris_cherny", "_catwu", "trq212",
     "googlelabs", "george__mack", "raizamrtn", "amasad", "rauchg",
     "rileybrown", "alexalbert__", "hamelhusein", "levie", "ryolu_",
-    "garrytan", "lulumeservey", "venturetwins", "mattturck", "joulee",
+    "garrytan", "lulumeservey", "pvncher", "mattturck", "joulee",
 )
 
 X_AI_TERMS = (
@@ -42,7 +42,7 @@ X_PRIORITY_QUERIES = (
     _x_priority_query(X_PRIORITY_HANDLES[15:]),
 )
 
-X_AI_QUERY = f"{X_AI_TERMS} -is:retweet -is:reply"
+X_AI_QUERY = f"{X_AI_TERMS} has:links -is:retweet -is:reply"
 
 
 SOURCES = (

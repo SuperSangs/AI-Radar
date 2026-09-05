@@ -104,6 +104,19 @@ class Store:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            # Upgrade previously collected X posts without spending another API
+            # request. New records use article/long-form fields for the richer
+            # classification; this gives older high-engagement posts a sensible
+            # discussion classification after deployment.
+            conn.execute(
+                """
+                UPDATE items
+                SET content_type='discussion'
+                WHERE source_key='x-ai'
+                  AND content_type='news'
+                  AND (engagement >= 300 OR LENGTH(summary) >= 180)
+                """
+            )
             for source in SOURCES:
                 conn.execute(
                     "INSERT OR IGNORE INTO source_status(source_key) VALUES (?)",
@@ -251,7 +264,7 @@ class Store:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         cutoff = (utc_now() - timedelta(hours=hours)).isoformat()
-        effective_time = "CASE WHEN content_type IN ('project', 'model') OR source_key='x-ai' THEN MAX(published_at, collected_at) ELSE published_at END"
+        effective_time = "CASE WHEN content_type IN ('project', 'model') THEN MAX(published_at, collected_at) ELSE published_at END"
         conditions = [f"{effective_time} >= ?"]
         params: list[Any] = [cutoff]
         if region != "all":
@@ -289,6 +302,9 @@ class Store:
             corroboration = min(24.0, (len({row["source_key"] for row in group}) - 1) * 12.0)
             quality = source_weight * 12.0 + min(12.0, float(best["raw_score"]))
             score = round(freshness + engagement + corroboration + quality, 1)
+            metadata = json.loads(best["metadata"])
+            metrics = metadata.get("metrics", {}) if isinstance(metadata, dict) else {}
+            discussion_score = float(metadata.get("discussion_score", 0) or 0) if isinstance(metadata, dict) else 0.0
             sources = []
             ordered_group = [best, *(row for row in group if row["id"] != best["id"])]
             for row in ordered_group:
@@ -315,6 +331,8 @@ class Store:
                     "content_type": best["content_type"],
                     "score": score,
                     "engagement": best["engagement"],
+                    "metrics": metrics,
+                    "discussion_score": discussion_score,
                     "tags": json.loads(best["tags"]),
                     "sources": sources,
                     "source_count": len({row["source_key"] for row in group}),
@@ -323,10 +341,16 @@ class Store:
         def priority_tier(item: dict[str, Any]) -> int:
             if item["source_key"] != "x-ai":
                 return 0
-            return 2 if "重点账号" in item["tags"] else 1
+            return 1
 
         ranked.sort(
-            key=lambda item: (priority_tier(item), item["score"], item["effective_at"]),
+            key=lambda item: (
+                priority_tier(item),
+                item["discussion_score"] if item["source_key"] == "x-ai" else item["score"],
+                "重点账号" in item["tags"],
+                item["score"],
+                item["effective_at"],
+            ),
             reverse=True,
         )
         max_dashboard_items = 50 + max(0, len(SOURCES) - 1) * 30
@@ -433,8 +457,8 @@ class Store:
                 """
                 SELECT COUNT(*) AS total,
                        SUM(CASE WHEN
-                           ((content_type IN ('project', 'model') OR source_key='x-ai') AND MAX(published_at, collected_at) >= ?)
-                           OR (content_type NOT IN ('project', 'model') AND source_key<>'x-ai' AND published_at >= ?)
+                           (content_type IN ('project', 'model') AND MAX(published_at, collected_at) >= ?)
+                           OR (content_type NOT IN ('project', 'model') AND published_at >= ?)
                            THEN 1 ELSE 0 END) AS today,
                        MAX(collected_at) AS updated_at
                 FROM items

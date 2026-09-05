@@ -124,10 +124,11 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(batch.cursor, "123456789")
             self.assertEqual(batch.resource_count, 1)
             self.assertEqual(batch.items[0]["region"], "china")
-            self.assertEqual(batch.items[0]["engagement"], 34)
+            self.assertEqual(batch.items[0]["engagement"], 39)
             requested_url = request_json.call_args.args[0]
             self.assertIn("max_results=50", requested_url)
             self.assertNotIn("expansions", requested_url)
+            self.assertIn("article%2Cnote_tweet", requested_url)
             self.assertEqual(request_json.call_args.args[1]["Authorization"], "Bearer test-token")
 
             skipped = collect_x(source, store)
@@ -179,11 +180,60 @@ class CollectorTests(unittest.TestCase):
         self.assertTrue(all("重点账号" in item["tags"] for item in batch.items[:20]))
         self.assertTrue(all("重点账号" not in item["tags"] for item in batch.items[20:]))
         requested_urls = [call.args[0] for call in request_json.call_args_list]
-        self.assertIn("max_results=20", requested_urls[0])
-        self.assertIn("max_results=20", requested_urls[1])
-        self.assertIn("max_results=10", requested_urls[2])
+        self.assertIn("max_results=15", requested_urls[0])
+        self.assertIn("max_results=15", requested_urls[1])
+        self.assertIn("max_results=20", requested_urls[2])
         self.assertIn("DeepSeek", requested_urls[2])
+        self.assertIn("has%3Alinks", requested_urls[2])
         self.assertTrue(all("since_id" not in url and "start_time" not in url for url in requested_urls))
+
+    @patch.dict("os.environ", {"X_BEARER_TOKEN": "test-token"}, clear=True)
+    @patch("radar.collector._request_json")
+    def test_x_article_becomes_hot_discussion_with_real_metrics(self, request_json: object) -> None:
+        request_json.return_value = {
+            "data": [{
+                "id": "2095991462416490862",
+                "text": "https://x.com/i/article/2095989703967125509",
+                "author_id": "1556653309",
+                "created_at": datetime.now(UTC).isoformat(),
+                "lang": "en",
+                "article": {
+                    "title": "Rethinking skills and prompts for GPT-6 Astra",
+                    "preview_text": "Coding-agent best practices are changing fast.",
+                    "content": {"blocks": [{"text": "A detailed and timely point of view."}]},
+                },
+                "public_metrics": {
+                    "impression_count": 1_562_633,
+                    "like_count": 3_614,
+                    "retweet_count": 373,
+                    "quote_count": 89,
+                    "reply_count": 81,
+                    "bookmark_count": 8_946,
+                },
+            }],
+            "meta": {"newest_id": "2095991462416490862"},
+        }
+        source = Source(
+            "x-test",
+            "X Test",
+            "global",
+            "news",
+            "https://api.x.com/2/tweets/search/recent",
+            "x",
+            query='"GPT-6" -is:retweet',
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "test.db")
+            item = collect_x(source, store).items[0]
+
+        self.assertEqual(item["title"], "Rethinking skills and prompts for GPT-6 Astra")
+        self.assertEqual(item["content_type"], "discussion")
+        self.assertEqual(item["author"], "X")
+        self.assertIn("观点", item["tags"])
+        self.assertIn("长文", item["tags"])
+        self.assertIn("高热度", item["tags"])
+        self.assertEqual(item["metadata"]["metrics"]["impression_count"], 1_562_633)
+        self.assertGreater(item["metadata"]["discussion_score"], 100)
 
 
 class StoreTests(unittest.TestCase):
@@ -233,6 +283,40 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(primary_sources.count("hf-models"), 30)
             self.assertEqual(len(items), 41)
             self.assertEqual(len(set(primary_sources)), 12)
+
+    def test_x_discussions_rank_by_reach_before_watchlist_membership(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "test.db")
+            timestamp = datetime.now(UTC).isoformat()
+
+            def x_item(external_id: str, score: float, tags: list[str]) -> dict[str, object]:
+                title = f"X opinion {external_id}"
+                return {
+                    "source_key": "x-ai",
+                    "external_id": external_id,
+                    "title": title,
+                    "url": f"https://x.com/i/web/status/{external_id}",
+                    "canonical_url": f"https://x.com/i/web/status/{external_id}",
+                    "summary": "A substantial and timely point of view about AI agents.",
+                    "author": "@author",
+                    "published_at": timestamp,
+                    "collected_at": timestamp,
+                    "region": "global",
+                    "content_type": "discussion",
+                    "raw_score": 8,
+                    "engagement": 1_000,
+                    "tags": tags,
+                    "metadata": {"discussion_score": score, "metrics": {"impression_count": 100_000}},
+                    "fingerprint": title_fingerprint(title),
+                }
+
+            store.upsert_items([
+                x_item("watched", 40, ["X", "重点账号", "观点"]),
+                x_item("viral", 120, ["X", "观点", "高热度"]),
+            ])
+            items = store.query_items(hours=24, content_type="discussion")
+
+            self.assertEqual([item["external_id"] if "external_id" in item else item["url"].rsplit("/", 1)[-1] for item in items], ["viral", "watched"])
 
     def test_store_ranks_and_deduplicates_same_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -290,7 +374,7 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0]["effective_at"], discovered)
 
-    def test_x_refetch_uses_latest_collection_time(self) -> None:
+    def test_x_refetch_keeps_original_publish_time_for_timeliness(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = Store(Path(temp_dir) / "test.db")
             old_time = (datetime.now(UTC) - timedelta(days=5)).isoformat()
@@ -315,9 +399,10 @@ class StoreTests(unittest.TestCase):
             }
             store.upsert_items([base])
             store.upsert_items([{**base, "collected_at": new_time}])
-            items = store.query_items(hours=24)
+            self.assertEqual(store.query_items(hours=24), [])
+            items = store.query_items(hours=168)
             self.assertEqual(len(items), 1)
-            self.assertEqual(items[0]["effective_at"], new_time)
+            self.assertEqual(items[0]["effective_at"], old_time)
 
 
 if __name__ == "__main__":

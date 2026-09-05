@@ -200,6 +200,7 @@ select {
 .rank-item:nth-child(-n+3) .rank-number { color: var(--orange); }
 .item-main { min-width: 0; }
 .item-meta { flex-wrap: wrap; gap: 8px; margin-bottom: 7px; color: var(--muted); font-size: 11px; }
+.x-metrics { color: #956020; font-weight: 650; }
 .type-badge {
   padding: 3px 6px;
   border-radius: 4px;

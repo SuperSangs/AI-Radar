@@ -289,7 +289,30 @@ static BOOL AIRadarLocalPortIsOpen(void) {
 - (void)reloadContent {
     [self ensureTunnel];
     [self loadFeed];
+    [self loadDiscussionFeed];
     [self loadDailyBrief];
+}
+
+- (void)loadDiscussionFeed {
+    NSURLComponents *components = [NSURLComponents componentsWithString:[kAPIBase stringByAppendingString:@"/api/items"]];
+    components.queryItems = @[
+        [NSURLQueryItem queryItemWithName:@"range" value:@"3d"],
+        [NSURLQueryItem queryItemWithName:@"region" value:@"all"],
+        [NSURLQueryItem queryItemWithName:@"type" value:@"discussion"],
+        [NSURLQueryItem queryItemWithName:@"limit" value:@"50"]
+    ];
+    [[[NSURLSession sharedSession] dataTaskWithURL:components.URL completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger statusCode = [response isKindOfClass:NSHTTPURLResponse.class] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        if (error || !data || statusCode != 200) return;
+        id payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if (![payload isKindOfClass:NSDictionary.class]) return;
+        NSArray *items = payload[@"items"] ?: @[];
+        NSData *json = [NSJSONSerialization dataWithJSONObject:items options:0 error:nil];
+        if (!json) return;
+        NSString *jsonString = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+        NSString *script = [NSString stringWithFormat:@"window.renderDiscussionItems(%@);", jsonString];
+        dispatch_async(dispatch_get_main_queue(), ^{ [self evaluateOrQueue:script]; });
+    }] resume];
 }
 
 - (void)loadDailyBrief {
@@ -403,17 +426,21 @@ static BOOL AIRadarLocalPortIsOpen(void) {
     "<div class='filters'><button class='filter active' data-filter='all' onclick=\"setFilter('all')\">全部</button><button class='filter' data-filter='project' onclick=\"setFilter('project')\">项目</button><button class='filter' data-filter='model' onclick=\"setFilter('model')\">模型</button><button class='filter' data-filter='paper' onclick=\"setFilter('paper')\">论文</button><button class='filter' data-filter='news' onclick=\"setFilter('news')\">资讯</button><button class='filter' data-filter='discussion' onclick=\"setFilter('discussion')\">讨论</button><button class='filter' data-filter='priority' onclick=\"setFilter('priority')\">重点账号</button></div>"
     "<div class='list' id='list'><div class='empty'>正在读取已采集内容</div></div>"
     "<script>function esc(s){return String(s||'').replace(/[&<>\\\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\\\"':'&quot;',\"'\":'&#39;'}[c]})}"
-    "function date(s){try{return new Date(s).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}var allItems=[];var activeFilter='all';var translations={};"
-    "function setFilter(filter){activeFilter=filter;document.querySelectorAll('.filter').forEach(function(b){b.classList.toggle('active',b.dataset.filter===filter)});renderFiltered()}"
+    "function date(s){try{return new Date(s).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}var allItems=[];var discussionItems=[];var activeFilter='all';var translations={};var recentCount=null;var statusError=false;"
+    "function updateViewStatus(){var el=document.getElementById('status');if(statusError)return;if(activeFilter==='discussion')el.textContent='近 3 天高热观点 · '+discussionItems.filter(matches).length+'条';else if(recentCount!==null)el.textContent='最近 24 小时 · '+recentCount+'条'}"
+    "function setFilter(filter){activeFilter=filter;document.querySelectorAll('.filter').forEach(function(b){b.classList.toggle('active',b.dataset.filter===filter)});renderFiltered();updateViewStatus()}"
+    "function compact(n){try{return new Intl.NumberFormat('zh-CN',{notation:'compact',maximumFractionDigits:1}).format(Number(n||0))}catch(e){return String(n||0)}}"
+    "function metricSummary(i){if(i.source_key!=='x-ai'||!i.metrics)return'';var m=i.metrics;var p=[];if(m.impression_count)p.push(compact(m.impression_count)+' 浏览');if(m.like_count)p.push(compact(m.like_count)+' 赞');if(m.retweet_count)p.push(compact(m.retweet_count)+' 转发');if(m.bookmark_count)p.push(compact(m.bookmark_count)+' 收藏');return p.join(' · ')}"
     "function toggleBrief(){var more=document.getElementById('briefMore');var button=document.getElementById('briefToggle');more.hidden=!more.hidden;button.textContent=more.hidden?'查看行动建议':'收起行动建议'}"
     "function renderDailyBrief(data){var box=document.getElementById('brief');var title=document.getElementById('briefTitle');var overview=document.getElementById('briefOverview');var themes=document.getElementById('briefThemes');var more=document.getElementById('briefMore');var toggle=document.getElementById('briefToggle');box.classList.remove('loading','failed');if(data.error){box.classList.add('failed');title.textContent='今日总结暂时不可用';overview.textContent='已采集的信息仍可正常查看，稍后点击右上角刷新重试。';themes.innerHTML='';more.hidden=true;toggle.hidden=true;document.getElementById('briefMeta').textContent='DeepSeek';return}title.textContent=data.headline||'今日 AI 情报';overview.textContent=data.overview||'';themes.innerHTML=(data.themes||[]).map(function(t){return '<span class=\"briefTheme\" title=\"'+esc(t.summary)+'\">'+esc(t.name)+'</span>'}).join('');var signals=(data.key_signals||[]).map(function(x){return '<li>'+esc(x)+'</li>'}).join('');var ideas=(data.content_ideas||[]).map(function(x){return '<li>'+esc(x)+'</li>'}).join('');more.innerHTML=(signals?'<strong>值得追踪</strong><ul>'+signals+'</ul>':'')+(ideas?'<strong>学习与内容切入点</strong><ul>'+ideas+'</ul>':'');toggle.hidden=!(signals||ideas);more.hidden=true;document.getElementById('briefMeta').textContent='DeepSeek · '+(data.item_count||0)+'条'}"
-    "function matches(i){if(activeFilter==='priority')return(i.tags||[]).indexOf('重点账号')>=0;if(activeFilter==='all')return true;return i.content_type===activeFilter}"
+    "function matches(i){if(activeFilter==='priority')return(i.tags||[]).indexOf('重点账号')>=0;if(activeFilter==='all')return true;if(activeFilter==='discussion')return i.content_type==='discussion'&&(i.source_key==='x-ai'||Number(i.engagement||0)>=500);return i.content_type===activeFilter}"
     "function renderItems(items){allItems=items||[];renderFiltered()}"
+    "function renderDiscussionItems(items){discussionItems=items||[];if(activeFilter==='discussion')renderFiltered();updateViewStatus()}"
     "function openItem(event,node){if(event.target.closest('button'))return;window.webkit.messageHandlers.openURL.postMessage(node.dataset.url)}"
     "function requestTranslation(event,id){event.preventDefault();event.stopPropagation();var node=document.querySelector('[data-id=\"'+id+'\"] .translation');var item=allItems.find(function(x){return x.id===id});node.hidden=false;node.textContent='DeepSeek 翻译中…';if(item)window.webkit.messageHandlers.translate.postMessage({id:id,text:item.summary||item.title||''})}"
-    "function renderFiltered(){var list=document.getElementById('list');var items=allItems.filter(matches);if(!items.length){list.innerHTML='<div class=\"empty\">当前分类暂无内容</div>';return}list.innerHTML=items.map(function(i){var source=(i.sources&&i.sources[0]&&i.sources[0].name)||'AI Radar';var region=i.region==='china'?'国内':'海外';var tag=(i.tags||[]).indexOf('重点账号')>=0?'重点账号':'强相关';var english=(i.tags||[]).indexOf('en')>=0;var translation=english?'<button class=\"translate\" onclick=\"requestTranslation(event,'+i.id+')\">翻译</button>':'';var cached=translations[i.id];var translated=cached?'<div class=\"translation\">'+esc(cached)+'</div>':'<div class=\"translation\" hidden></div>';return '<div class=\"item\" data-id=\"'+i.id+'\" data-url=\"'+esc(i.url)+'\" role=\"link\" tabindex=\"0\" onclick=\"openItem(event,this)\"><div class=\"meta\">'+esc(source)+' · '+region+' · '+date(i.effective_at)+'</div><div class=\"title\">'+esc(i.title)+'</div>'+(i.summary?'<div class=\"summary\">'+esc(i.summary)+'</div>':'')+translated+'<div class=\"foot\"><span class=\"tag\">'+tag+'</span><span class=\"tools\">'+translation+'<span>'+(i.engagement?'热度 '+i.engagement:'AI')+'</span></span></div></div>'}).join('')}"
+    "function renderFiltered(){var list=document.getElementById('list');var sourceItems=activeFilter==='discussion'?discussionItems:allItems;var items=sourceItems.filter(matches);if(!items.length){list.innerHTML='<div class=\"empty\">当前分类暂无高热观点</div>';return}list.innerHTML=items.map(function(i){var source=i.author||((i.sources&&i.sources[0]&&i.sources[0].name)||'AI Radar');var region=i.region==='china'?'国内':'海外';var tag=(i.tags||[]).indexOf('重点账号')>=0?'重点账号':((i.tags||[]).indexOf('高热度')>=0?'高热度':'强相关');var english=(i.tags||[]).indexOf('en')>=0;var translation=english?'<button class=\"translate\" onclick=\"requestTranslation(event,'+i.id+')\">翻译</button>':'';var cached=translations[i.id];var translated=cached?'<div class=\"translation\">'+esc(cached)+'</div>':'<div class=\"translation\" hidden></div>';var metrics=metricSummary(i);return '<div class=\"item\" data-id=\"'+i.id+'\" data-url=\"'+esc(i.url)+'\" role=\"link\" tabindex=\"0\" onclick=\"openItem(event,this)\"><div class=\"meta\">'+esc(source)+' · '+region+' · '+date(i.effective_at)+'</div><div class=\"title\">'+esc(i.title)+'</div>'+(i.summary?'<div class=\"summary\">'+esc(i.summary)+'</div>':'')+translated+'<div class=\"foot\"><span class=\"tag\">'+tag+'</span><span class=\"tools\">'+translation+'<span>'+esc(metrics||(i.engagement?'热度 '+i.engagement:'AI'))+'</span></span></div></div>'}).join('')}"
     "function showTranslation(data){var value=data.error?'翻译暂时失败，请稍后重试':data.text;translations[data.id]=value;var node=document.querySelector('[data-id=\"'+data.id+'\"] .translation');if(!node)return;node.hidden=false;node.textContent=value}"
-    "function setRadarStatus(text,count,error){var el=document.getElementById('status');el.textContent=count===null?text:(text+' · '+count+'条');el.className='status'+(error?' error':'')}"
+    "function setRadarStatus(text,count,error){var el=document.getElementById('status');statusError=!!error;if(count!==null)recentCount=count;el.textContent=count===null?text:(text+' · '+count+'条');el.className='status'+(error?' error':'');if(!error)updateViewStatus()}"
     "</script></body></html>";
 }
 @end

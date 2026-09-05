@@ -65,6 +65,21 @@ function el(tag, className, text) {
   return node;
 }
 
+function compactCount(value) {
+  return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
+}
+
+function xMetricSummary(item) {
+  if (item.source_key !== "x-ai" || !item.metrics) return "";
+  const metrics = item.metrics;
+  const parts = [];
+  if (metrics.impression_count) parts.push(`${compactCount(metrics.impression_count)} 浏览`);
+  if (metrics.like_count) parts.push(`${compactCount(metrics.like_count)} 赞`);
+  if (metrics.retweet_count) parts.push(`${compactCount(metrics.retweet_count)} 转发`);
+  if (metrics.bookmark_count) parts.push(`${compactCount(metrics.bookmark_count)} 收藏`);
+  return parts.join(" · ");
+}
+
 function sourceLink(source) {
   const link = el("a", "source-chip", source.name);
   link.href = source.url;
@@ -158,9 +173,12 @@ function renderItems(items) {
     const meta = el("div", "item-meta");
     meta.append(el("span", `type-badge ${item.content_type}`, typeNames[item.content_type] || "资讯"));
     meta.append(el("span", "", item.region === "china" ? "国内" : "海外"));
+    if (item.author) meta.append(el("span", "", item.author));
     const discoveryDelay = new Date(item.discovered_at).getTime() - new Date(item.published_at).getTime();
     meta.append(el("span", "", discoveryDelay > 12 * 3600 * 1000 ? `${relativeTime(item.effective_at)}发现` : relativeTime(item.published_at)));
-    if (item.engagement > 0) meta.append(el("span", "", `${item.engagement.toLocaleString()} 热度`));
+    const xMetrics = xMetricSummary(item);
+    if (xMetrics) meta.append(el("span", "x-metrics", xMetrics));
+    else if (item.engagement > 0) meta.append(el("span", "", `${item.engagement.toLocaleString()} 热度`));
 
     const title = el("h3", "item-title");
     const titleLink = el("a", "", item.title);
@@ -232,6 +250,7 @@ function filterItems(items) {
   return items.filter((item) => {
     if (state.region !== "all" && item.region !== state.region) return false;
     if (state.type !== "all" && item.content_type !== state.type) return false;
+    if (state.type === "discussion" && item.source_key !== "x-ai" && item.engagement < 500) return false;
     if (!query) return true;
     const searchable = [
       item.title,
@@ -371,6 +390,14 @@ function bindPressedGroup(id, key) {
     if (!button) return;
     for (const peer of button.parentElement.querySelectorAll("button")) peer.setAttribute("aria-pressed", String(peer === button));
     state[key] = button.dataset.value;
+    if (key === "type" && state.type === "discussion" && state.range === "24h") {
+      state.range = "3d";
+      for (const rangeButton of document.querySelectorAll("#range-filter button")) {
+        rangeButton.setAttribute("aria-pressed", String(rangeButton.dataset.value === "3d"));
+      }
+      loadItems();
+      return;
+    }
     if (key === "range") loadItems();
     else renderCurrentItems();
   });

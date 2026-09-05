@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import threading
@@ -480,6 +481,72 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def _x_content(post: dict[str, Any]) -> tuple[str, str, bool, bool]:
+    """Prefer the readable title/body carried by X Articles and long Posts."""
+    fallback = clean_html(post.get("text", ""), 2000)
+    article = post.get("article") if isinstance(post.get("article"), dict) else {}
+    note = post.get("note_tweet") if isinstance(post.get("note_tweet"), dict) else {}
+
+    article_title = clean_html(article.get("title", ""), 260)
+    article_preview = clean_html(article.get("preview_text", ""), 1000)
+    article_blocks = []
+    content = article.get("content")
+    if isinstance(content, dict):
+        for block in content.get("blocks", []):
+            if isinstance(block, dict) and block.get("text"):
+                article_blocks.append(str(block["text"]))
+    article_body = clean_html("\n".join(article_blocks), 2000)
+    note_text = clean_html(note.get("text", ""), 2000)
+
+    is_article = bool(article_title or article_preview or article_body)
+    is_longform = bool(note_text) or len(article_body) >= 280 or len(fallback) >= 240
+    title = article_title or note_text or fallback
+    summary = article_preview or article_body or note_text or fallback
+    return title, summary, is_article, is_longform
+
+
+def _x_metrics(metrics: dict[str, Any]) -> dict[str, int]:
+    names = (
+        "impression_count", "like_count", "retweet_count", "quote_count",
+        "reply_count", "bookmark_count",
+    )
+    return {name: max(0, int(metrics.get(name, 0) or 0)) for name in names}
+
+
+def _x_discussion_signal(
+    metrics: dict[str, int],
+    *,
+    is_article: bool,
+    is_longform: bool,
+    text_length: int,
+    priority: bool,
+) -> tuple[bool, int, float]:
+    actions = (
+        metrics["like_count"]
+        + metrics["reply_count"] * 2
+        + metrics["retweet_count"] * 4
+        + metrics["quote_count"] * 5
+        + metrics["bookmark_count"] * 2
+    )
+    impressions = metrics["impression_count"]
+    hot = impressions >= 50_000 and (
+        metrics["like_count"] >= 200
+        or metrics["retweet_count"] + metrics["quote_count"] >= 40
+        or metrics["bookmark_count"] >= 150
+    )
+    opinion = is_article or is_longform or hot or (text_length >= 140 and actions >= 300)
+    reach_signal = int(math.sqrt(min(impressions, 5_000_000)))
+    engagement = actions + reach_signal
+    discussion_score = (
+        math.log1p(impressions) * 4.0
+        + math.log1p(actions) * 6.0
+        + (14.0 if is_article else 0.0)
+        + (7.0 if is_longform else 0.0)
+        + (5.0 if priority else 0.0)
+    )
+    return opinion, engagement, round(discussion_score, 2)
+
+
 def collect_x(source: Source, store: Store) -> CollectionBatch:
     token = os.environ.get("X_BEARER_TOKEN", "").strip()
     if not token:
@@ -515,11 +582,11 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
     resource_count = 0
     next_pages: list[tuple[str, bool, str]] = []
 
-    # For the default 50-resource budget, reserve two 20-resource requests for
-    # watched accounts and ten resources for broader AI discovery. Pagination
+    # For the default 50-resource budget, reserve two 15-resource requests for
+    # watched accounts and 20 resources for broader AI opinion discovery. Pagination
     # can fill unused capacity without exceeding the daily paid-resource cap.
     if source.key == "x-ai" and max_results >= 30:
-        discovery_size = 10
+        discovery_size = max(10, min(20, max_results - 20))
         priority_total = max_results - discovery_size
         first_priority_size = priority_total // 2
         second_priority_size = priority_total - first_priority_size
@@ -543,7 +610,7 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
             "query": query,
             "max_results": query_max_results,
             "sort_order": "relevancy",
-            "tweet.fields": "id,text,author_id,created_at,lang,public_metrics,entities,referenced_tweets",
+            "tweet.fields": "id,text,author_id,created_at,lang,public_metrics,entities,referenced_tweets,article,note_tweet",
         }
         if pagination_token:
             params["pagination_token"] = pagination_token
@@ -570,45 +637,57 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
 
         for post in posts:
             post_id = str(post.get("id", ""))
-            text = clean_html(post.get("text", ""), 420)
-            if not post_id or not text:
+            title, summary, is_article, is_longform = _x_content(post)
+            if not post_id or not title:
                 continue
-            metrics = post.get("public_metrics") or {}
-            engagement = (
-                int(metrics.get("like_count", 0) or 0)
-                + int(metrics.get("reply_count", 0) or 0) * 2
-                + int(metrics.get("retweet_count", 0) or 0) * 3
-                + int(metrics.get("quote_count", 0) or 0) * 3
-                + int(metrics.get("bookmark_count", 0) or 0) * 2
+            metrics = _x_metrics(post.get("public_metrics") or {})
+            is_priority = priority
+            opinion, engagement, discussion_score = _x_discussion_signal(
+                metrics,
+                is_article=is_article,
+                is_longform=is_longform,
+                text_length=max(len(title), len(summary)),
+                priority=is_priority,
             )
             language = str(post.get("lang", ""))
             tags = ["X"]
-            if priority:
+            if is_priority:
                 tags.append("重点账号")
+            if opinion:
+                tags.append("观点")
+            if is_article or is_longform:
+                tags.append("长文")
+            if metrics["impression_count"] >= 50_000 or engagement >= 800:
+                tags.append("高热度")
             if language:
                 tags.append(language)
             item = _base_item(
                 source,
                 external_id=post_id,
-                title=text[:260],
+                title=title,
                 url=f"https://x.com/i/web/status/{post_id}",
-                summary=text,
-                author="X 重点账号" if priority else "X",
+                summary=summary,
+                author="X 重点账号" if is_priority else "X",
                 published_at=post.get("created_at"),
                 engagement=engagement,
-                raw_score=min(12, engagement / 50 + (3 if priority else 0)),
+                raw_score=min(12, math.log1p(engagement) * 1.4 + (2 if is_priority else 0)),
                 tags=tags,
                 metadata={
                     "author_id": post.get("author_id"),
                     "language": language,
                     "metrics": metrics,
-                    "query_group": "priority" if priority else "discovery",
+                    "query_group": "priority" if is_priority else "discovery",
+                    "is_article": is_article,
+                    "is_longform": is_longform,
+                    "discussion_score": discussion_score,
                 },
             )
+            if opinion:
+                item["content_type"] = "discussion"
             if language == "zh":
                 item["region"] = "china"
             existing = result_by_id.get(post_id)
-            if existing is None or priority:
+            if existing is None or is_priority:
                 result_by_id[post_id] = item
 
         if not query_plan and resource_count < max_results and next_pages:
