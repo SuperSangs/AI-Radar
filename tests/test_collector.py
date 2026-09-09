@@ -173,15 +173,16 @@ class CollectorTests(unittest.TestCase):
 
     @patch.dict("os.environ", {"X_BEARER_TOKEN": "test-token"}, clear=True)
     @patch("radar.collector._request_json")
+    @patch.dict("os.environ", {"X_MAX_RESULTS": "50"})
     def test_x_ai_prioritizes_accounts_and_uses_keyword_fallback(self, request_json: object) -> None:
         def payload(start: int, count: int, next_token: str = "") -> dict[str, object]:
             posts = [{
                 "id": str(start + index),
-                "text": f"AI update {start + index} from a priority account",
+                "text": f"AI update {start + index} from a priority account. " + "We tested model inference and measured latency on a reproducible task. " * 2,
                 "author_id": str(start),
                 "created_at": datetime.now(UTC).isoformat(),
                 "lang": "en",
-                "public_metrics": {},
+                "public_metrics": {"like_count": 100},
             } for index in range(count)]
             meta = {"newest_id": str(start + count - 1)}
             if next_token:
@@ -221,7 +222,7 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("max_results=20", requested_urls[2])
         self.assertIn("DeepSeek", requested_urls[2])
         self.assertIn("has%3Alinks", requested_urls[2])
-        self.assertTrue(all("since_id" not in url and "start_time" not in url for url in requested_urls))
+        self.assertTrue(all("start_time" in url for url in requested_urls))
 
     @patch.dict("os.environ", {"X_BEARER_TOKEN": "test-token"}, clear=True)
     @patch("radar.collector._request_json")
@@ -368,7 +369,10 @@ class StoreTests(unittest.TestCase):
                 "devto-ai", "qbitai", "reddit-ml", "simon-willison", "solidot",
             ):
                 records.append(item(source_key, source_key, content_type="news", age_hours=6, engagement=1, raw_score=0))
-            records.append(item("x-ai", "x-priority", content_type="news", age_hours=20, engagement=1, raw_score=0, tags=["X", "重点账号"]))
+            watched = item("x-ai", "x-priority", content_type="news", age_hours=20, engagement=1, raw_score=0, tags=["X", "重点账号"])
+            watched['summary'] = 'AI model inference findings with reproducible benchmarks and practical observations. ' * 2
+            watched['metadata'] = {'metrics': {'like_count': 20}}
+            records.append(watched)
             store.upsert_items(records)
 
             items = store.query_items(hours=24, limit=50)
@@ -392,7 +396,7 @@ class StoreTests(unittest.TestCase):
                     "title": title,
                     "url": f"https://x.com/i/web/status/{external_id}",
                     "canonical_url": f"https://x.com/i/web/status/{external_id}",
-                    "summary": "A substantial and timely point of view about AI agents.",
+                    "summary": ("AI agents benefit from reliable tool execution and task feedback. " * 3 if external_id == 'watched' else "LLM reasoning improves through reinforcement learning and verifiable rewards. " * 3),
                     "author": "@author",
                     "published_at": timestamp,
                     "collected_at": timestamp,
@@ -401,7 +405,7 @@ class StoreTests(unittest.TestCase):
                     "raw_score": 8,
                     "engagement": 1_000,
                     "tags": tags,
-                    "metadata": {"discussion_score": score, "metrics": {"impression_count": 100_000}},
+                    "metadata": {"discussion_score": score, "metrics": {"impression_count": 100_000, "like_count": 300}},
                     "fingerprint": title_fingerprint(title),
                 }
 
@@ -493,6 +497,8 @@ class StoreTests(unittest.TestCase):
                 "fingerprint": title_fingerprint("A useful AI post"),
             }
             store.upsert_items([base])
+            base['summary'] = 'AI model inference findings with reproducible benchmarks and practical observations. ' * 2
+            base['metadata'] = {'metrics': {'like_count': 20}}
             store.upsert_items([{**base, "collected_at": new_time}])
             self.assertEqual(store.query_items(hours=24), [])
             items = store.query_items(hours=168)

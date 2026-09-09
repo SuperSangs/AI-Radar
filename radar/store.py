@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from .sources import SOURCES, is_model_research
+from .x_policy import admissible, duplicate
 
 
 SCHEMA = """
@@ -104,19 +105,6 @@ class Store:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
-            # Upgrade previously collected X posts without spending another API
-            # request. New records use article/long-form fields for the richer
-            # classification; this gives older high-engagement posts a sensible
-            # discussion classification after deployment.
-            conn.execute(
-                """
-                UPDATE items
-                SET content_type='discussion'
-                WHERE source_key='x-ai'
-                  AND content_type='news'
-                  AND (engagement >= 300 OR LENGTH(summary) >= 180)
-                """
-            )
             for source in SOURCES:
                 conn.execute(
                     "INSERT OR IGNORE INTO source_status(source_key) VALUES (?)",
@@ -189,6 +177,22 @@ class Store:
                 """,
                 (cursor, cursor, today, previous + max(0, resource_count), key),
             )
+
+    def reserve_x_resources(self, amount: int, daily_limit: int) -> bool:
+        """Reserve before HTTP: unknown outcomes consume budget conservatively."""
+        today = utc_now().date().isoformat()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT resource_day, resource_count FROM source_cursors WHERE source_key='x-ai'").fetchone()
+            used = row['resource_count'] if row['resource_day'] == today else 0
+            if used + amount > daily_limit:
+                return False
+            conn.execute("UPDATE source_cursors SET resource_day=?, resource_count=? WHERE source_key='x-ai'", (today, used + amount))
+            return True
+
+    def refund_x_resources(self, amount: int) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE source_cursors SET resource_count=MAX(0, resource_count-?) WHERE source_key='x-ai' AND resource_day=?", (amount, utc_now().date().isoformat()))
 
     def start_run(self) -> int:
         with self.connect() as conn:
@@ -306,6 +310,12 @@ class Store:
             metrics = metadata.get("metrics", {}) if isinstance(metadata, dict) else {}
             discussion_score = float(metadata.get("discussion_score", 0) or 0) if isinstance(metadata, dict) else 0.0
             tags = json.loads(best["tags"])
+            if best["source_key"] == "x-ai" and not admissible(
+                best["title"] + " " + metadata.get("source_text", best["summary"]), metrics,
+                official=bool(metadata.get("official")), priority="重点账号" in tags,
+                article=bool(metadata.get("is_article")),
+            ):
+                continue
             model_relevant = best["content_type"] != "paper" or is_model_research(
                 best["title"], best["summary"], tags
             )
@@ -344,7 +354,11 @@ class Store:
                     "score": score,
                     "engagement": best["engagement"],
                     "metrics": metrics,
-                    "discussion_score": discussion_score,
+                    "metrics_fetched_at": metadata.get("metrics_fetched_at", best["collected_at"]) if best["source_key"] == "x-ai" else None,
+                    "source_text": metadata.get("source_text", best["summary"]),
+                    "text_scope": metadata.get("text_scope", "excerpt"),
+                    "edit_history_tweet_ids": metadata.get("edit_history_tweet_ids", []),
+                    "discussion_score": round(discussion_score * (0.35 + 0.65 * max(0, 1 - age_hours / max(hours, 24))), 2),
                     "paper_metrics": paper_metrics,
                     "model_relevant": model_relevant,
                     "tags": tags,
@@ -355,7 +369,7 @@ class Store:
         def priority_tier(item: dict[str, Any]) -> int:
             if item["source_key"] != "x-ai":
                 return 0
-            return 1
+            return 2 if "官方发布" in item["tags"] else 1
 
         ranked.sort(
             key=lambda item: (
@@ -367,12 +381,20 @@ class Store:
             ),
             reverse=True,
         )
-        max_dashboard_items = 50 + max(0, len(SOURCES) - 1) * 30
+        max_dashboard_items = 70 + max(0, len(SOURCES) - 1) * 30
         result_limit = max(1, min(limit, max_dashboard_items))
         source_counts: dict[str, int] = defaultdict(int)
         selected: list[dict[str, Any]] = []
         for item in ranked:
-            source_limit = 50 if item["source_key"] == "x-ai" else 30
+            source_limit = 70 if item["source_key"] == "x-ai" else 30
+            if item["source_key"] == "x-ai":
+                match = next((other for other in selected if other["source_key"] == "x-ai" and (
+                    bool(set(item["edit_history_tweet_ids"]) & set(other["edit_history_tweet_ids"])) or
+                    duplicate(item["title"] + ' ' + item["source_text"], other["title"] + ' ' + other["source_text"])
+                )), None)
+                if match is not None:
+                    match.setdefault("duplicate_urls", []).append(item["url"])
+                    continue
             if source_counts[item["source_key"]] >= source_limit:
                 continue
             selected.append(item)

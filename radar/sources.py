@@ -44,6 +44,12 @@ X_PRIORITY_QUERIES = (
 
 X_AI_QUERY = f"{X_AI_TERMS} has:links -is:retweet -is:reply"
 
+X_OFFICIAL_HANDLES = (
+    "OpenAI", "OpenAIDevs", "AnthropicAI", "ClaudeAI", "ClaudeDevs",
+    "GoogleDeepMind", "GeminiApp", "GoogleAI", "GoogleAIStudio",
+)
+X_OFFICIAL_QUERY = "(" + " OR ".join(f"from:{h}" for h in X_OFFICIAL_HANDLES) + ") -is:retweet -is:reply"
+
 MODEL_RESEARCH_TERMS = (
     "large language model", "language model", "foundation model", "world model",
     "vision-language", "multimodal model", "generative model", "neural model",

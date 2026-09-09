@@ -20,7 +20,8 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any
 
-from .sources import SOURCES, X_AI_QUERY, X_PRIORITY_QUERIES, Source, is_model_research
+from .sources import SOURCES, X_AI_QUERY, X_PRIORITY_QUERIES, X_OFFICIAL_QUERY, Source, is_model_research
+from .x_policy import POLICY_VERSION, admissible
 from .store import Store, utc_now
 
 
@@ -50,6 +51,7 @@ class CollectionBatch:
     cursor: str = ""
     skipped: str = ""
     resource_count: int = 0
+    accounted: bool = False
 
 
 class TextExtractor(HTMLParser):
@@ -525,7 +527,7 @@ def _x_content(post: dict[str, Any]) -> tuple[str, str, bool, bool]:
     is_article = bool(article_title or article_preview or article_body)
     is_longform = bool(note_text) or len(article_body) >= 280 or len(fallback) >= 240
     title = article_title or note_text or fallback
-    summary = article_preview or article_body or note_text or fallback
+    summary = article_body or note_text or article_preview or fallback
     return title, summary, is_article, is_longform
 
 
@@ -576,7 +578,7 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
     if not token:
         raise RuntimeError("X_BEARER_TOKEN is not configured")
 
-    max_results = _env_int("X_MAX_RESULTS", 50, 10, 100)
+    max_results = _env_int("X_MAX_RESULTS", 70 if source.key == "x-ai" else 50, 10, 70)
     max_calls = _env_int("X_MAX_CALLS_PER_DAY", 1, 1, 24)
     min_interval = _env_int("X_MIN_INTERVAL_MINUTES", 1440, 30, 1440)
     allowed, cursor, reason = store.begin_source_request(
@@ -609,7 +611,14 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
     # For the default 50-resource budget, reserve two 15-resource requests for
     # watched accounts and 20 resources for broader AI opinion discovery. Pagination
     # can fill unused capacity without exceeding the daily paid-resource cap.
-    if source.key == "x-ai" and max_results >= 30:
+    if source.key == "x-ai" and max_results == 70:
+        query_plan = [
+            (X_OFFICIAL_QUERY, 15, True, ""),
+            (X_PRIORITY_QUERIES[0], 12, True, ""),
+            (X_PRIORITY_QUERIES[1], 13, True, ""),
+            (X_AI_QUERY, 30, False, ""),
+        ]
+    elif source.key == "x-ai" and max_results >= 30:
         discovery_size = max(10, min(20, max_results - 20))
         priority_total = max_results - discovery_size
         first_priority_size = priority_total // 2
@@ -633,11 +642,13 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
         params = {
             "query": query,
             "max_results": query_max_results,
-            "sort_order": "relevancy",
-            "tweet.fields": "id,text,author_id,created_at,lang,public_metrics,entities,referenced_tweets,article,note_tweet",
+            "sort_order": "recency" if query == X_OFFICIAL_QUERY else "relevancy",
+            "tweet.fields": "id,text,author_id,created_at,lang,public_metrics,entities,referenced_tweets,article,note_tweet,edit_history_tweet_ids,conversation_id",
         }
+        if source.key == "x-ai":
+            params["start_time"] = (utc_now() - timedelta(hours=24)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         if pagination_token:
-            params["pagination_token"] = pagination_token
+            params["next_token"] = pagination_token
         elif source.key != "x-ai" and cursor:
             params["since_id"] = cursor
         elif source.key != "x-ai":
@@ -645,12 +656,16 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
                 utc_now() - timedelta(hours=24)
             ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+        if source.key == "x-ai" and not store.reserve_x_resources(query_max_results, max_results):
+            break
         payload = _request_json(
             f"{source.url}?{urllib.parse.urlencode(params)}",
             request_headers,
             proxy_url=proxy_url,
         )
         posts = payload.get("data", [])
+        if source.key == "x-ai":
+            store.refund_x_resources(max(0, query_max_results - len(posts)))
         resource_count += len(posts)
         newest_id = str(payload.get("meta", {}).get("newest_id", ""))
         if newest_id:
@@ -666,6 +681,12 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
                 continue
             metrics = _x_metrics(post.get("public_metrics") or {})
             is_priority = priority
+            official = query == X_OFFICIAL_QUERY
+            if source.key == "x-ai":
+                if not post.get("created_at") or parse_datetime(post["created_at"]) < utc_now() - timedelta(hours=24):
+                    continue
+                if not admissible(title + " " + summary, metrics, official=official, priority=priority, article=is_article):
+                    continue
             opinion, engagement, discussion_score = _x_discussion_signal(
                 metrics,
                 is_article=is_article,
@@ -673,8 +694,12 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
                 text_length=max(len(title), len(summary)),
                 priority=is_priority,
             )
+            if official:
+                opinion = is_article or len(summary) >= 600
             language = str(post.get("lang", ""))
             tags = ["X"]
+            if official:
+                tags.append("官方发布")
             if is_priority:
                 tags.append("重点账号")
             if opinion:
@@ -700,7 +725,13 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
                     "author_id": post.get("author_id"),
                     "language": language,
                     "metrics": metrics,
-                    "query_group": "priority" if is_priority else "discovery",
+                    "metrics_fetched_at": utc_now().isoformat(),
+                    "policy_version": POLICY_VERSION,
+                    "source_text": summary,
+                    "text_scope": "available_excerpt",
+                    "official": official,
+                    "edit_history_tweet_ids": post.get("edit_history_tweet_ids", [post_id]),
+                    "query_group": "official" if official else ("priority" if is_priority else "discovery"),
                     "is_article": is_article,
                     "is_longform": is_longform,
                     "discussion_score": discussion_score,
@@ -708,10 +739,12 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
             )
             if opinion:
                 item["content_type"] = "discussion"
+            else:
+                item["content_type"] = "news"
             if language == "zh":
                 item["region"] = "china"
             existing = result_by_id.get(post_id)
-            if existing is None or is_priority:
+            if existing is None or official or (is_priority and not existing['metadata'].get('official')):
                 result_by_id[post_id] = item
 
         if not query_plan and resource_count < max_results and next_pages:
@@ -724,7 +757,7 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
     if not newest_ids and result:
         newest_ids = [item["external_id"] for item in result]
     newest_id = max(newest_ids, key=int) if newest_ids else ""
-    return CollectionBatch(result, cursor=newest_id, resource_count=resource_count)
+    return CollectionBatch(result, cursor=newest_id, resource_count=resource_count, accounted=source.key == "x-ai")
 
 
 ADAPTERS = {
@@ -770,7 +803,7 @@ def refresh_all(store: Store, max_workers: int = 6) -> dict[str, Any]:
                     store.finish_source_request(
                         source.key,
                         cursor=batch.cursor,
-                        resource_count=batch.resource_count,
+                        resource_count=0 if batch.accounted else batch.resource_count,
                     )
                 latency_ms = int((time.monotonic() - started) * 1000)
                 store.update_source(source.key, count=inserted, latency_ms=latency_ms)

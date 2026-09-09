@@ -66,7 +66,7 @@ function el(tag, className, text) {
 }
 
 function compactCount(value) {
-  return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(Number(value || 0));
 }
 
 function xMetricSummary(item) {
@@ -135,7 +135,7 @@ function renderDailyBrief(data) {
   elements.briefToggle.setAttribute("aria-expanded", "false");
   elements.briefToggle.textContent = "展开完整分析";
   const staleLabel = data.stale ? " · 当前为上次成功结果" : "";
-  elements.briefMeta.textContent = `DeepSeek · 基于 ${data.item_count || 0} 条已采集内容 · ${relativeTime(data.generated_at)}生成${staleLabel}`;
+  elements.briefMeta.textContent = `DeepSeek · 基于 ${data.item_count || 0} 条 X 内容 · ${relativeTime(data.generated_at)}生成${staleLabel}`;
 }
 
 function renderDailyBriefError() {
@@ -188,6 +188,7 @@ function renderItems(items) {
     meta.append(el("span", "", discoveryDelay > 12 * 3600 * 1000 ? `${relativeTime(item.effective_at)}发现` : relativeTime(item.published_at)));
     const communityMetrics = xMetricSummary(item) || paperMetricSummary(item);
     if (communityMetrics) meta.append(el("span", "x-metrics", communityMetrics));
+    if (item.source_key === "x-ai" && item.metrics_fetched_at) meta.append(el("span", "", `指标更新于 ${new Date(item.metrics_fetched_at).toLocaleString("zh-CN")}`));
     else if (item.engagement > 0) meta.append(el("span", "", `${item.engagement.toLocaleString()} 热度`));
 
     const title = el("h3", "item-title");
@@ -401,8 +402,8 @@ function bindPressedGroup(id, key) {
     if (!button) return;
     for (const peer of button.parentElement.querySelectorAll("button")) peer.setAttribute("aria-pressed", String(peer === button));
     state[key] = button.dataset.value;
-    const expandedRange = state.type === "discussion" ? "3d" : state.type === "paper" ? "7d" : "";
-    if (key === "type" && expandedRange && state.range === "24h") {
+    const expandedRange = state.type === "discussion" ? "24h" : state.type === "paper" ? "7d" : "";
+    if (key === "type" && expandedRange && state.range !== expandedRange) {
       state.range = expandedRange;
       for (const rangeButton of document.querySelectorAll("#range-filter button")) {
         rangeButton.setAttribute("aria-pressed", String(rangeButton.dataset.value === expandedRange));

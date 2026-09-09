@@ -33,7 +33,7 @@ def summary_items() -> list[dict[str, object]]:
 
 def stored_item(index: int) -> dict[str, object]:
     now = datetime.now(UTC).isoformat()
-    source_key = "x-ai" if index == 1 else "github-llm"
+    source_key = "x-ai"
     title = f"AI cached update {index}"
     return {
         "source_key": source_key,
@@ -50,7 +50,7 @@ def stored_item(index: int) -> dict[str, object]:
         "raw_score": 2,
         "engagement": 10 * index,
         "tags": ["重点账号"] if index == 1 else ["AI"],
-        "metadata": {},
+        "metadata": {"official": True},
         "fingerprint": title_fingerprint(title),
     }
 
