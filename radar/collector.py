@@ -20,7 +20,7 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any
 
-from .sources import SOURCES, X_AI_QUERY, X_PRIORITY_QUERIES, X_OFFICIAL_QUERY, Source, is_model_research
+from .sources import SOURCES, X_AI_QUERY, X_PRIORITY_QUERIES, X_OFFICIAL_QUERY, X_RESEARCH_QUERY, Source, is_model_research
 from .x_policy import POLICY_VERSION, admissible
 from .store import Store, utc_now
 
@@ -573,7 +573,7 @@ def _x_discussion_signal(
     return opinion, engagement, round(discussion_score, 2)
 
 
-def collect_x(source: Source, store: Store) -> CollectionBatch:
+def collect_x(source: Source, store: Store, *, force: bool = False) -> CollectionBatch:
     token = os.environ.get("X_BEARER_TOKEN", "").strip()
     if not token:
         raise RuntimeError("X_BEARER_TOKEN is not configured")
@@ -581,9 +581,17 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
     max_results = _env_int("X_MAX_RESULTS", 70 if source.key == "x-ai" else 50, 10, 70)
     max_calls = _env_int("X_MAX_CALLS_PER_DAY", 1, 1, 24)
     min_interval = _env_int("X_MIN_INTERVAL_MINUTES", 1440, 30, 1440)
+    incremental = source.key == "x-ai" and max_results == 70
+    if incremental:
+        # Separate cycle settings supersede the old once-a-day gate; the paid
+        # resource ledger remains the hard limit across every cycle and restart.
+        max_calls = _env_int("X_CYCLES_PER_DAY", 12, 1, 24)
+        min_interval = _env_int("X_CYCLE_INTERVAL_MINUTES", 120, 30, 1440)
+        if store.x_resources_remaining(max_results) < 10:
+            return CollectionBatch([], skipped="daily paid-resource budget reached")
     allowed, cursor, reason = store.begin_source_request(
         source.key,
-        min_interval_minutes=min_interval,
+        min_interval_minutes=0 if force else min_interval,
         max_calls_per_day=max_calls,
     )
     if not allowed:
@@ -607,17 +615,27 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
     newest_ids: list[str] = []
     resource_count = 0
     next_pages: list[tuple[str, bool, str]] = []
+    target = _env_int("X_VISIBLE_TARGET", 30, 30, 70)
+    cycle_limit = min(max_results, 60) if incremental else max_results
+    if incremental and store.visible_x_count() >= target:
+        cycle_limit = 10
+    progress = store.x_search_progress() if incremental else {}
+    windows: dict[str, tuple[str, str]] = {}
 
     # For the default 50-resource budget, reserve two 15-resource requests for
     # watched accounts and 20 resources for broader AI opinion discovery. Pagination
     # can fill unused capacity without exceeding the daily paid-resource cap.
     if source.key == "x-ai" and max_results == 70:
         query_plan = [
-            (X_OFFICIAL_QUERY, 15, True, ""),
-            (X_PRIORITY_QUERIES[0], 12, True, ""),
-            (X_PRIORITY_QUERIES[1], 13, True, ""),
-            (X_AI_QUERY, 30, False, ""),
+            (X_OFFICIAL_QUERY, 10, True, ""),
+            (X_PRIORITY_QUERIES[0], 10, True, ""),
+            (X_PRIORITY_QUERIES[1], 10, True, ""),
+            (X_RESEARCH_QUERY, 10, True, ""),
+            (X_AI_QUERY, 10, False, ""),
         ]
+        # Rotate to the least recently searched lane; each lane keeps its own
+        # fixed search window and pagination, including rejected candidates.
+        query_plan.sort(key=lambda entry: progress.get(entry[0], {}).get('fetched_at', ''))
     elif source.key == "x-ai" and max_results >= 30:
         discovery_size = max(10, min(20, max_results - 20))
         priority_total = max_results - discovery_size
@@ -634,9 +652,12 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
             for query, priority in query_templates
         ]
 
-    while query_plan and resource_count < max_results:
+    page_attempts = 0
+    while query_plan and resource_count < cycle_limit and page_attempts < 12:
         query, requested_results, priority, pagination_token = query_plan.pop(0)
-        query_max_results = min(requested_results, max_results - resource_count)
+        query_max_results = min(requested_results, cycle_limit - resource_count)
+        if source.key == 'x-ai':
+            query_max_results = min(query_max_results, store.x_resources_remaining(max_results))
         if query_max_results < 10:
             break
         params = {
@@ -647,6 +668,19 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
         }
         if source.key == "x-ai":
             params["start_time"] = (utc_now() - timedelta(hours=24)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        if incremental:
+            previous = progress.get(query, {})
+            if query not in windows:
+                cutoff = params['start_time']
+                end = (utc_now() - timedelta(seconds=30)).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+                if previous.get('next_token') and previous['end_time'] > cutoff:
+                    windows[query] = (previous['start_time'], previous['end_time'])
+                    pagination_token = previous['next_token']
+                else:
+                    windows[query] = (max(cutoff, previous.get('end_time', cutoff)), end)
+            params['start_time'], params['end_time'] = windows[query]
+            if params['start_time'] >= params['end_time']:
+                continue
         if pagination_token:
             params["next_token"] = pagination_token
         elif source.key != "x-ai" and cursor:
@@ -658,6 +692,7 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
 
         if source.key == "x-ai" and not store.reserve_x_resources(query_max_results, max_results):
             break
+        page_attempts += 1
         payload = _request_json(
             f"{source.url}?{urllib.parse.urlencode(params)}",
             request_headers,
@@ -747,11 +782,19 @@ def collect_x(source: Source, store: Store) -> CollectionBatch:
             if existing is None or official or (is_priority and not existing['metadata'].get('official')):
                 result_by_id[post_id] = item
 
+        if incremental:
+            # Persist successful pages before advancing. A later HTTP failure
+            # must not discard good posts already paid for and collected.
+            store.upsert_items(result_by_id.values())
+            store.save_x_search_progress(query, *windows[query], next_token)
+            if store.visible_x_count() >= target:
+                break
+
         if not query_plan and resource_count < max_results and next_pages:
             next_query, next_priority, next_token = next_pages.pop(0)
             remaining = max_results - resource_count
             if remaining >= 10:
-                query_plan.append((next_query, remaining, next_priority, next_token))
+                query_plan.append((next_query, min(10, remaining) if incremental else remaining, next_priority, next_token))
 
     result = list(result_by_id.values())
     if not newest_ids and result:

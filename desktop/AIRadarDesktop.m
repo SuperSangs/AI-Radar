@@ -259,7 +259,7 @@ static BOOL AIRadarLocalPortIsOpen(void) {
         [NSURLQueryItem queryItemWithName:@"range" value:@"24h"],
         [NSURLQueryItem queryItemWithName:@"region" value:@"all"],
         [NSURLQueryItem queryItemWithName:@"type" value:@"all"],
-        [NSURLQueryItem queryItemWithName:@"limit" value:@"740"]
+        [NSURLQueryItem queryItemWithName:@"limit" value:@"760"]
     ];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:components.URL completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -279,7 +279,9 @@ static BOOL AIRadarLocalPortIsOpen(void) {
             NSData *json = [NSJSONSerialization dataWithJSONObject:items options:0 error:&jsonError];
             if (jsonError) { [self sendStatus:@"无法读取列表" error:YES]; return; }
             NSString *jsonString = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
-            NSString *script = [NSString stringWithFormat:@"window.renderItems(%@); window.setRadarStatus('最近 24 小时', %lu);", jsonString, (unsigned long)items.count];
+            NSDictionary *coverage = [payload[@"x_collection"] isKindOfClass:NSDictionary.class] ? payload[@"x_collection"] : @{};
+            NSString *coverageJSON = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:coverage options:0 error:nil] encoding:NSUTF8StringEncoding];
+            NSString *script = [NSString stringWithFormat:@"window.renderItems(%@,%@); window.setRadarStatus('最近 24 小时', %lu);", jsonString, coverageJSON, (unsigned long)items.count];
             [self evaluateOrQueue:script];
         });
     }];
@@ -450,14 +452,14 @@ static BOOL AIRadarLocalPortIsOpen(void) {
     "<div class='list' id='list'><div class='empty'>正在读取已采集内容</div></div>"
     "<script>function esc(s){return String(s||'').replace(/[&<>\\\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\\\"':'&quot;',\"'\":'&#39;'}[c]})}"
     "function date(s){try{return new Date(s).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}var allItems=[];var discussionItems=[];var paperItems=[];var activeFilter='all';var translations={};var recentCount=null;var statusError=false;"
-    "function updateViewStatus(){var el=document.getElementById('status');if(statusError)return;if(activeFilter==='discussion')el.textContent='近 24 小时高热观点 · '+discussionItems.filter(matches).length+'条';else if(activeFilter==='paper')el.textContent='近 7 天社区热门论文 · '+paperItems.filter(matches).length+'条';else if(recentCount!==null)el.textContent='最近 24 小时 · '+recentCount+'条'}"
+    "var xCoverage={};function updateViewStatus(){var el=document.getElementById('status');if(statusError)return;var xCount=allItems.filter(function(i){return i.source_key==='x-ai'}).length;var target=xCoverage.target||30;var gap=xCount<target?(xCoverage.daily_read_remaining<10?' · 采集额度不足':' · 待补采'):'';el.title='最近24小时 X 筛选去重后 '+xCount+' 条，目标 '+target+' 条。每日付费读取剩余 '+(xCoverage.daily_read_remaining==null?'未知':xCoverage.daily_read_remaining)+' 条；读取数量不等于展示数量。';if(activeFilter==='discussion')el.textContent='近 24 小时高热观点 · '+discussionItems.filter(matches).length+'条';else if(activeFilter==='paper')el.textContent='近 7 天社区热门论文 · '+paperItems.filter(matches).length+'条';else if(recentCount!==null)el.textContent='24 小时 · X '+xCount+'条 · 共 '+recentCount+'条'+gap}"
     "function setFilter(filter){activeFilter=filter;document.querySelectorAll('.filter').forEach(function(b){b.classList.toggle('active',b.dataset.filter===filter)});renderFiltered();updateViewStatus()}"
     "function compact(n){try{return new Intl.NumberFormat('zh-CN',{maximumFractionDigits:0}).format(Number(n||0))}catch(e){return String(n||0)}}"
     "function metricSummary(i){var m=i.source_key==='x-ai'?i.metrics:(i.content_type==='paper'?i.paper_metrics:null);if(!m)return'';var p=[];if(i.source_key==='x-ai'){if(m.impression_count)p.push(compact(m.impression_count)+' 浏览');if(m.like_count)p.push(compact(m.like_count)+' 赞');if(m.retweet_count)p.push(compact(m.retweet_count)+' 转发');if(m.bookmark_count)p.push(compact(m.bookmark_count)+' 收藏')}else{if(m.upvotes)p.push(compact(m.upvotes)+' 赞同');if(m.comments)p.push(compact(m.comments)+' 讨论');if(m.github_stars)p.push(compact(m.github_stars)+' GitHub stars')}return p.join(' · ')}"
     "function toggleBrief(){var more=document.getElementById('briefMore');var button=document.getElementById('briefToggle');more.hidden=!more.hidden;button.textContent=more.hidden?'查看行动建议':'收起行动建议'}"
     "function renderDailyBrief(data){var box=document.getElementById('brief');var title=document.getElementById('briefTitle');var overview=document.getElementById('briefOverview');var themes=document.getElementById('briefThemes');var more=document.getElementById('briefMore');var toggle=document.getElementById('briefToggle');box.classList.remove('loading','failed');if(data.error){box.classList.add('failed');title.textContent='今日总结暂时不可用';overview.textContent='已采集的信息仍可正常查看，稍后点击右上角刷新重试。';themes.innerHTML='';more.hidden=true;toggle.hidden=true;document.getElementById('briefMeta').textContent='DeepSeek';return}title.textContent=data.headline||'今日 AI 情报';overview.textContent=data.overview||'';themes.innerHTML=(data.themes||[]).map(function(t){return '<span class=\"briefTheme\" title=\"'+esc(t.summary)+'\">'+esc(t.name)+'</span>'}).join('');var signals=(data.key_signals||[]).map(function(x){return '<li>'+esc(x)+'</li>'}).join('');var ideas=(data.content_ideas||[]).map(function(x){return '<li>'+esc(x)+'</li>'}).join('');more.innerHTML=(signals?'<strong>值得追踪</strong><ul>'+signals+'</ul>':'')+(ideas?'<strong>学习与内容切入点</strong><ul>'+ideas+'</ul>':'');toggle.hidden=!(signals||ideas);more.hidden=true;document.getElementById('briefMeta').textContent='DeepSeek · '+(data.item_count||0)+'条 X · '+date(data.generated_at)+(data.stale?' · 上次结果':'')}"
     "function matches(i){if(activeFilter==='priority')return(i.tags||[]).indexOf('重点账号')>=0;if(activeFilter==='all')return true;if(activeFilter==='discussion')return i.content_type==='discussion'&&(i.source_key==='x-ai'||Number(i.engagement||0)>=500);if(activeFilter==='paper')return i.content_type==='paper'&&i.model_relevant;return i.content_type===activeFilter}"
-    "function renderItems(items){allItems=items||[];renderFiltered()}"
+    "function renderItems(items,coverage){allItems=items||[];xCoverage=coverage||{};renderFiltered()}"
     "function renderDiscussionItems(items){discussionItems=items||[];if(activeFilter==='discussion')renderFiltered();updateViewStatus()}"
     "function renderPaperItems(items){paperItems=items||[];if(activeFilter==='paper')renderFiltered();updateViewStatus()}"
     "function openItem(event,node){if(event.target.closest('button'))return;window.webkit.messageHandlers.openURL.postMessage(node.dataset.url)}"

@@ -28,7 +28,7 @@ X_PRIORITY_HANDLES = (
 X_AI_TERMS = (
     "(\"AI\" OR \"LLM\" OR \"GPT\" OR \"Claude\" OR \"Gemini\" OR "
     "\"DeepSeek\" OR \"Qwen\" OR \"Cursor\" OR \"Agent\" OR \"MCP\" OR "
-    "\"Model\" OR \"Coding\" OR \"大模型\" OR \"智能体\" OR \"开源模型\")"
+    "\"Codex\" OR \"LLMs\" OR \"大模型\" OR \"智能体\" OR \"开源模型\")"
 )
 
 
@@ -42,7 +42,18 @@ X_PRIORITY_QUERIES = (
     _x_priority_query(X_PRIORITY_HANDLES[15:]),
 )
 
-X_AI_QUERY = f"{X_AI_TERMS} has:links -is:retweet -is:reply"
+# Supplement the user's watchlist with model researchers, independent model
+# evaluation and technical practitioners; not a replacement for watched people.
+X_RESEARCH_QUERY = _x_priority_query((
+    "rasbt", "simonw", "omarsar0", "jeremyphoward", "fchollet",
+    "DrJimFan", "Yampeleg", "arena", "ArtificialAnlys",
+))
+
+X_AI_QUERY = (
+    f"{X_AI_TERMS} (reasoning OR inference OR benchmark OR evaluation OR training "
+    "OR workflow OR agents OR research OR 发布 OR 评测 OR 推理 OR 训练) "
+    '-is:retweet -is:reply -airdrop -giveaway -presale -"free tokens" -"telegram bot"'
+)
 
 X_OFFICIAL_HANDLES = (
     "OpenAI", "OpenAIDevs", "AnthropicAI", "ClaudeAI", "ClaudeDevs",

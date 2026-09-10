@@ -73,6 +73,14 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
     item_count INTEGER NOT NULL DEFAULT 0,
     generated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS x_search_progress (
+    query TEXT PRIMARY KEY,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    next_token TEXT NOT NULL DEFAULT '',
+    fetched_at TEXT NOT NULL
+);
 """
 
 
@@ -189,6 +197,24 @@ class Store:
                 return False
             conn.execute("UPDATE source_cursors SET resource_day=?, resource_count=? WHERE source_key='x-ai'", (today, used + amount))
             return True
+
+    def x_resources_remaining(self, daily_limit: int) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT resource_day, resource_count FROM source_cursors WHERE source_key='x-ai'").fetchone()
+        used = row['resource_count'] if row and row['resource_day'] == utc_now().date().isoformat() else 0
+        return max(0, daily_limit - used)
+
+    def x_search_progress(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as conn:
+            return {row['query']: dict(row) for row in conn.execute('SELECT * FROM x_search_progress')}
+
+    def save_x_search_progress(self, query: str, start: str, end: str, token: str) -> None:
+        with self.connect() as conn:
+            conn.execute('INSERT OR REPLACE INTO x_search_progress VALUES (?, ?, ?, ?, ?)',
+                         (query, start, end, token, utc_now().isoformat()))
+
+    def visible_x_count(self) -> int:
+        return sum(item['source_key'] == 'x-ai' for item in self.query_items(hours=24, limit=760))
 
     def refund_x_resources(self, amount: int) -> None:
         with self.connect() as conn:

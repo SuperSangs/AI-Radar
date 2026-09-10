@@ -221,7 +221,7 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("max_results=15", requested_urls[1])
         self.assertIn("max_results=20", requested_urls[2])
         self.assertIn("DeepSeek", requested_urls[2])
-        self.assertIn("has%3Alinks", requested_urls[2])
+        self.assertNotIn("has%3Alinks", requested_urls[2])
         self.assertTrue(all("start_time" in url for url in requested_urls))
 
     @patch.dict("os.environ", {"X_BEARER_TOKEN": "test-token"}, clear=True)

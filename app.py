@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import mimetypes
 import os
@@ -12,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from radar.collector import refresh_all
+from radar.collector import refresh_all, _env_int
 from radar.daily_summary import DailySummaryError, get_or_create_daily_summary
 from radar.store import Store
 from radar.translator import TranslationError, translate_to_chinese
@@ -171,7 +172,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Invalid filter"}, HTTPStatus.BAD_REQUEST)
             return
         items = STORE.query_items(hours=hours, region=region, content_type=content_type, query=query, limit=limit)
-        self.send_json({"items": items, "count": len(items), "range": range_value})
+        x_limit = _env_int('X_MAX_RESULTS', 70, 10, 70)
+        # X ranks before other sources and is capped at 70; the unfiltered
+        # default response already contains the full X selection.
+        x_count = (sum(item['source_key'] == 'x-ai' for item in items)
+                   if hours == 24 and region == 'all' and content_type == 'all' and not query and limit >= 70
+                   else STORE.visible_x_count())
+        self.send_json({"items": items, "count": len(items), "range": range_value,
+                        "x_collection": {"visible_24h": x_count,
+                                         "target": _env_int('X_VISIBLE_TARGET', 30, 30, 70),
+                                         "daily_read_limit": x_limit,
+                                         "daily_read_remaining": STORE.x_resources_remaining(x_limit)}})
 
     def serve_static(self, request_path: str) -> None:
         relative = "index.html" if request_path in {"", "/"} else request_path.lstrip("/")
@@ -192,8 +203,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_json(self, payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        compress = False
+        for encoding in self.headers.get('Accept-Encoding', '').split(','):
+            parts = [part.strip().lower() for part in encoding.split(';')]
+            if parts[0] == 'gzip':
+                try:
+                    quality = next((float(part[2:]) for part in parts[1:] if part.startswith('q=')), 1.0)
+                except ValueError:
+                    quality = 0
+                compress = quality > 0 and len(body) >= 1024
+        if compress:
+            body = gzip.compress(body, compresslevel=5)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header('Vary', 'Accept-Encoding')
+        if compress:
+            self.send_header('Content-Encoding', 'gzip')
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

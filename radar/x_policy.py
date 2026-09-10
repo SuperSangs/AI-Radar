@@ -40,4 +40,8 @@ def duplicate(left, right):
     if min(len(a), len(b)) < 100:
         return False
     # Compare substantive text, not merely a shared URL or topic.
-    return SequenceMatcher(None, a[:6000], b[:6000], autojunk=False).ratio() >= .93
+    matcher = SequenceMatcher(None, a[:6000], b[:6000], autojunk=False)
+    # Both fast ratios are upper bounds, so this avoids expensive comparisons
+    # without changing the duplicate threshold or its decisions.
+    return (matcher.real_quick_ratio() >= .93 and matcher.quick_ratio() >= .93
+            and matcher.ratio() >= .93)
